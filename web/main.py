@@ -204,6 +204,10 @@ def index():
     video {{ width: 100%; max-width: 960px; background: #000; }}
     table {{ border-collapse: collapse; width: 100%; max-width: 720px; }}
     th, td {{ border: 1px solid #ddd; padding: 6px 8px; text-align: left; }}
+    .wind-card .row {{ display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }}
+    .compass {{ width: 120px; height: 120px; border: 2px solid #333; border-radius: 50%; position: relative; }}
+    .compass .needle {{ position: absolute; left: 50%; top: 10%; width: 2px; height: 45%; background: #c0392b; transform-origin: bottom center; }}
+    .compass .center {{ position: absolute; left: 50%; top: 50%; width: 8px; height: 8px; background: #333; border-radius: 50%; transform: translate(-50%, -50%); }}
   </style>
 </head>
 <body>
@@ -251,11 +255,50 @@ def index():
     const windSeries = [];
     const WIND_MAX_POINTS = 120;
 
-    const DASHBOARD_EXCLUDE = new Set([
-      'wind_raw','wind_voltage_v','wind_current_ma',
-      'wind_speed_raw','wind_speed_ma',
-      'wind_direction_raw','wind_direction_ma'
-    ]);
+    const WIND_METRIC_PREFIX = 'wind_';
+
+    function isWindMetric(id) {{
+      return id && id.startsWith(WIND_METRIC_PREFIX);
+    }}
+
+    function windCardinal(deg) {{
+      if (deg === null || deg === undefined || isNaN(deg)) return '--';
+      const dirs = ['N','NNE','NE','ENE','E','ESE','SE','SSE','S','SSW','SW','WSW','W','WNW','NW','NNW'];
+      const idx = Math.round(((deg % 360) / 22.5)) % 16;
+      return dirs[(idx + 16) % 16];
+    }}
+
+    function buildWindCard(data) {{
+      const entries = Object.values(data).filter(v => isWindMetric(v.metric_id));
+      const byId = {{}};
+      entries.forEach(v => {{ byId[v.metric_id] = v; }});
+      const speed = byId['wind_speed_ms'] ? byId['wind_speed_ms'].value : undefined;
+      const dir = byId['wind_direction_deg'] ? byId['wind_direction_deg'].value : undefined;
+      const ts = Math.max(byId['wind_speed_ms'] ? byId['wind_speed_ms'].ts : 0, byId['wind_direction_deg'] ? byId['wind_direction_deg'].ts : 0);
+
+      const speedStr = (speed === undefined) ? '--' : Number(speed).toFixed(2);
+      const dirStr = (dir === undefined) ? '--' : Number(dir).toFixed(0);
+      const cardinal = windCardinal(Number(dir));
+      const unitSpeed = metricUnit('wind_speed_ms', 'm/s');
+
+      const card = document.createElement('div');
+      card.className = 'card wind-card';
+      const deg = (dir === undefined || isNaN(dir)) ? 0 : Number(dir);
+      const tsText = ts ? new Date(ts*1000).toLocaleString() : '';
+      card.innerHTML = `
+        <strong>Viento</strong>
+        <div>Velocidad: ${speedStr} ${unitSpeed}</div>
+        <div>Dirección: ${dirStr}° (${cardinal})</div>
+        <div class="row">
+          <div class="compass">
+            <div class="needle" style="transform: translateX(-50%) rotate(${deg}deg);"></div>
+            <div class="center"></div>
+          </div>
+          <div><small>${tsText}</small></div>
+        </div>
+      `;
+      return card;
+    }}
 
     function setTab(name) {{
       document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === name));
@@ -277,9 +320,13 @@ def index():
       const data = await res.json();
       const el = document.getElementById('latest');
       el.innerHTML = '';
+
+      const windCard = buildWindCard(data);
+      if (windCard) el.appendChild(windCard);
+
       Object.keys(data).forEach(k => {{
         const v = data[k];
-        if (DASHBOARD_EXCLUDE.has(v.metric_id)) return;
+        if (isWindMetric(v.metric_id)) return;
         const label = metricLabel(v.metric_id);
         const unit = metricUnit(v.metric_id, v.unit);
         const card = document.createElement('div');
@@ -295,16 +342,16 @@ def index():
       body.innerHTML = '';
       const rows = Object.values(data).filter(v => v.device_id === 'wind_esp8266');
       rows.sort((a,b) => a.metric_id.localeCompare(b.metric_id));
+      const dirDegRow = rows.find(r => r.metric_id === 'wind_direction_deg');
+      const dirDeg = dirDegRow ? Number(dirDegRow.value) : undefined;
+
       rows.forEach(v => {{
         const tr = document.createElement('tr');
         const label = metricLabel(v.metric_id);
         const unit = metricUnit(v.metric_id, v.unit);
         let value = v.value;
         if (v.metric_id === 'wind_direction_cardinal') {{
-          try {{
-            const raw = JSON.parse(v.raw_json || '{{}}');
-            value = raw.direction_cardinal || v.value;
-          }} catch(e) {{}}
+          value = windCardinal(dirDeg);
         }}
         tr.innerHTML = `<td>${{label}}</td><td>${{value}} ${{unit}}</td><td>${{new Date(v.ts*1000).toLocaleString()}}</td>`;
         body.appendChild(tr);
@@ -390,4 +437,5 @@ def index():
 </body>
 </html>
 """)
+
 
