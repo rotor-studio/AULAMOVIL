@@ -54,10 +54,16 @@ def parse_timestamp(value, default=None):
 
 
 CONFIG = load_config()
+REGISTRY = load_yaml("/opt/rotor-meteo/config/registry.yaml")
 DB_PATH = CONFIG["storage"]["sqlite_path"]
 SSE_INTERVAL = float(CONFIG["web"].get("sse_interval_sec", 1.0))
 CAMERA = CONFIG.get("camera", {})
 HLS_DIR = CAMERA.get("hls_dir") or "/opt/rotor-meteo/data/hls"
+
+# Optional human-friendly overrides
+LABEL_OVERRIDES = {
+    "wind_speed_ms": "Velocidad del viento",
+}
 
 app = FastAPI(title="Rotor Meteo")
 app.mount("/static", StaticFiles(directory="/opt/rotor-meteo/web/static"), name="static")
@@ -85,6 +91,16 @@ def build_rtsp_url():
 
 def build_hls_url():
     return "/hls/stream.m3u8"
+
+
+def get_metric_name(metric_id):
+    if metric_id in LABEL_OVERRIDES:
+        return LABEL_OVERRIDES[metric_id]
+    return REGISTRY.get("metrics", {}).get(metric_id, {}).get("name", metric_id)
+
+
+def get_metric_unit(metric_id, fallback=None):
+    return REGISTRY.get("metrics", {}).get(metric_id, {}).get("unit", fallback)
 
 
 def get_latest_map():
@@ -211,6 +227,8 @@ def index():
       <thead><tr><th>Metric</th><th>Value</th><th>Updated</th></tr></thead>
       <tbody id=\"windBody\"></tbody>
     </table>
+    <h3>Velocidad del viento (tiempo real)</h3>
+    <canvas id=\"windChart\" width=\"700\" height=\"220\"></canvas>
   </div>
 
   <div id=\"camera\" class=\"panel\">
@@ -225,12 +243,26 @@ def index():
 
   <script src=\"/static/hls.min.js\"></script>
   <script>
+    const METRIC_NAMES = {json.dumps({k: (LABEL_OVERRIDES.get(k) or v.get('name')) for k, v in REGISTRY.get('metrics', {}).items()})};
+    const METRIC_UNITS = {json.dumps({k: v.get('unit') for k, v in REGISTRY.get('metrics', {}).items()})};
+
+    const windSeries = [];
+    const WIND_MAX_POINTS = 120;
+
     function setTab(name) {{
       document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === name));
       document.querySelectorAll('.panel').forEach(p => p.classList.toggle('active', p.id === name));
     }}
 
     document.querySelectorAll('.tab').forEach(t => t.addEventListener('click', () => setTab(t.dataset.tab)));
+
+    function metricLabel(id) {{
+      return METRIC_NAMES[id] || id;
+    }}
+
+    function metricUnit(id, fallback) {{
+      return METRIC_UNITS[id] || fallback || '';
+    }}
 
     async function loadLatest() {{
       const res = await fetch('/api/latest');
@@ -239,9 +271,11 @@ def index():
       el.innerHTML = '';
       Object.keys(data).forEach(k => {{
         const v = data[k];
+        const label = metricLabel(v.metric_id);
+        const unit = metricUnit(v.metric_id, v.unit);
         const card = document.createElement('div');
         card.className = 'card';
-        card.innerHTML = `<strong>${{k}}</strong><br>${{v.value}} ${{v.unit || ''}}<br><small>${{new Date(v.ts*1000).toLocaleString()}}</small>`;
+        card.innerHTML = `<strong>${{label}}</strong><br>${{v.value}} ${{unit}}<br><small>${{new Date(v.ts*1000).toLocaleString()}}</small>`;
         el.appendChild(card);
       }});
       renderWind(data);
@@ -254,9 +288,41 @@ def index():
       rows.sort((a,b) => a.metric_id.localeCompare(b.metric_id));
       rows.forEach(v => {{
         const tr = document.createElement('tr');
-        tr.innerHTML = `<td>${{v.metric_id}}</td><td>${{v.value}} ${{v.unit || ''}}</td><td>${{new Date(v.ts*1000).toLocaleString()}}</td>`;
+        const label = metricLabel(v.metric_id);
+        const unit = metricUnit(v.metric_id, v.unit);
+        tr.innerHTML = `<td>${{label}}</td><td>${{v.value}} ${{unit}}</td><td>${{new Date(v.ts*1000).toLocaleString()}}</td>`;
         body.appendChild(tr);
       }});
+
+      const speed = rows.find(r => r.metric_id === 'wind_speed_ms');
+      if (speed) {{
+        windSeries.push({{ ts: speed.ts, value: speed.value }});
+        while (windSeries.length > WIND_MAX_POINTS) windSeries.shift();
+        drawWindChart();
+      }}
+    }}
+
+    function drawWindChart() {{
+      const canvas = document.getElementById('windChart');
+      const ctx = canvas.getContext('2d');
+      ctx.clearRect(0,0,canvas.width,canvas.height);
+      if (windSeries.length === 0) return;
+
+      const xs = windSeries.map(p => p.ts);
+      const ys = windSeries.map(p => p.value);
+      const minX = Math.min(...xs), maxX = Math.max(...xs);
+      const minY = Math.min(...ys), maxY = Math.max(...ys);
+      const pad = 10;
+
+      ctx.beginPath();
+      windSeries.forEach((p, i) => {{
+        const x = pad + (p.ts - minX) / (maxX - minX || 1) * (canvas.width - pad*2);
+        const y = canvas.height - pad - (p.value - minY) / (maxY - minY || 1) * (canvas.height - pad*2);
+        if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+      }});
+      ctx.strokeStyle = '#1f7a8c';
+      ctx.lineWidth = 2;
+      ctx.stroke();
     }}
 
     async function loadHistory() {{
