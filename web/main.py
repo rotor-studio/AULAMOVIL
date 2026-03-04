@@ -1,4 +1,4 @@
-import asyncio
+﻿import asyncio
 import json
 import os
 import sqlite3
@@ -302,7 +302,7 @@ def index():
         let value = v.value;
         if (v.metric_id === 'wind_direction_cardinal') {{
           try {{
-            const raw = JSON.parse(v.raw_json || '{}');
+            const raw = JSON.parse(v.raw_json || '{{}}');
             value = raw.direction_cardinal || v.value;
           }} catch(e) {{}}
         }}
@@ -390,3 +390,4 @@ def index():
 </body>
 </html>
 """)
+
