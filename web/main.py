@@ -287,11 +287,11 @@ def index():
       const tsText = ts ? new Date(ts*1000).toLocaleString() : '';
       card.innerHTML = `
         <strong>Viento</strong>
-        <div>Velocidad: ${speedStr} ${unitSpeed}</div>
-        <div>Dirección: ${dirStr}° (${cardinal})</div>
+        <div>Velocidad: ${{speedStr}} ${{unitSpeed}}</div>
+        <div>Dirección: ${{dirStr}}° (${{cardinal}})</div>
         <div class="row">
           <div class="compass">
-            <div class="needle" style="transform: translateX(-50%) rotate(${deg}deg);"></div>
+            <div class="needle" style="transform: translateX(-50%) rotate(${{deg}}deg);"></div>
             <div class="center"></div>
           </div>
           <div><small>${tsText}</small></div>
@@ -437,5 +437,6 @@ def index():
 </body>
 </html>
 """)
+
 
 
