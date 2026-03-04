@@ -11,6 +11,7 @@ We convert RTSP to HLS locally with ffmpeg.
 - HLS playlist: /hls/stream.m3u8
 - Web UI uses HLS.js from /static/hls.min.js
 - RTSP URL configured in config/app.yaml
+- **Passwords are stored in /etc/rotor-meteo/secrets.yaml (not in git)**
 
 Example RTSP:
 `

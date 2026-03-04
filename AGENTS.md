@@ -7,7 +7,8 @@
 - Pi camera-network IP: 192.168.50.1.
 
 ## Camera
-- RTSP in config/app.yaml.
+- RTSP config in config/app.yaml.
+- Passwords stored in /etc/rotor-meteo/secrets.yaml (not in git).
 - HLS served at /hls/stream.m3u8.
 - HLS.js served at /static/hls.min.js.
 

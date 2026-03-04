@@ -1,5 +1,6 @@
 import asyncio
 import json
+import os
 import sqlite3
 import time
 from datetime import datetime, timezone
@@ -10,9 +11,27 @@ from fastapi.responses import HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 
-def load_config(path):
+def load_yaml(path):
+    if not os.path.exists(path):
+        return {}
     with open(path, "r", encoding="utf-8") as f:
-        return yaml.safe_load(f)
+        return yaml.safe_load(f) or {}
+
+
+def merge_dict(a, b):
+    out = dict(a)
+    for k, v in b.items():
+        if isinstance(v, dict) and isinstance(out.get(k), dict):
+            out[k] = merge_dict(out[k], v)
+        else:
+            out[k] = v
+    return out
+
+
+def load_config():
+    base = load_yaml("/opt/rotor-meteo/config/app.yaml")
+    secrets = load_yaml("/etc/rotor-meteo/secrets.yaml")
+    return merge_dict(base, secrets)
 
 
 def parse_timestamp(value, default=None):
@@ -34,7 +53,7 @@ def parse_timestamp(value, default=None):
     return default
 
 
-CONFIG = load_config("/opt/rotor-meteo/config/app.yaml")
+CONFIG = load_config()
 DB_PATH = CONFIG["storage"]["sqlite_path"]
 SSE_INTERVAL = float(CONFIG["web"].get("sse_interval_sec", 1.0))
 CAMERA = CONFIG.get("camera", {})

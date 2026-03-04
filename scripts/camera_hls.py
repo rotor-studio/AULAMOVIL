@@ -5,9 +5,27 @@ import time
 import yaml
 
 
-def load_config(path):
+def load_yaml(path):
+    if not os.path.exists(path):
+        return {}
     with open(path, "r", encoding="utf-8") as f:
-        return yaml.safe_load(f)
+        return yaml.safe_load(f) or {}
+
+
+def merge_dict(a, b):
+    out = dict(a)
+    for k, v in b.items():
+        if isinstance(v, dict) and isinstance(out.get(k), dict):
+            out[k] = merge_dict(out[k], v)
+        else:
+            out[k] = v
+    return out
+
+
+def load_config():
+    base = load_yaml("/opt/rotor-meteo/config/app.yaml")
+    secrets = load_yaml("/etc/rotor-meteo/secrets.yaml")
+    return merge_dict(base, secrets)
 
 
 def build_rtsp_url(cfg):
@@ -25,7 +43,7 @@ def build_rtsp_url(cfg):
 
 
 def main():
-    cfg = load_config("/opt/rotor-meteo/config/app.yaml")
+    cfg = load_config()
     hls_dir = cfg.get("camera", {}).get("hls_dir") or "/opt/rotor-meteo/data/hls"
     os.makedirs(hls_dir, exist_ok=True)
 
