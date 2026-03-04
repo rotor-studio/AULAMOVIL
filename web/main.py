@@ -294,7 +294,7 @@ def index():
             <div class="needle" style="transform: translateX(-50%) rotate(${{deg}}deg);"></div>
             <div class="center"></div>
           </div>
-          <div><small>${tsText}</small></div>
+          <div><small>${{tsText}}</small></div>
         </div>
       `;
       return card;
@@ -437,6 +437,7 @@ def index():
 </body>
 </html>
 """)
+
 
 
 
