@@ -9,3 +9,8 @@ web:
   host: 0.0.0.0
   port: 8000
   sse_interval_sec: 1.0
+camera:
+  host: 192.168.50.10
+  rtsp_path: /Streaming/Channels/101
+  username: admin
+  password: REDACTED

@@ -1,11 +1,16 @@
 # Rotor Meteo Setup Notes
 
 ## Network Mode (Current)
-We are **not** using AP mode. The Pi connects to the existing Wi-Fi network:
 - Wi-Fi: ROTORLINK on wlan0
-- eth0 reserved for CCTV camera (kept disconnected by default)
+- eth0 reserved for CCTV camera and provides DHCP on 192.168.50.0/24
+- Camera network DHCP range: 192.168.50.10 - 192.168.50.100
+- Pi on camera network: 192.168.50.1/24
 
-If you ever need to clean AP mode, remove hostapd and dnsmasq and ensure only wlan0 is connected via NetworkManager.
+## Camera (RTSP)
+Default RTSP URL (configurable in config/app.yaml):
+`
+rtsp://<user>:<pass>@<camera-ip>:554/Streaming/Channels/101
+`
 
 ## MQTT Topic Convention
 Prefix: otor/meteo
@@ -32,6 +37,7 @@ Payload (JSON):
 - GET /api/latest
 - GET /api/history?metric=...&from=...&to=...
 - GET /api/stream (SSE)
+- GET /api/camera
 
 ## Access
 Dashboard: http://<pi-ip>:8000/

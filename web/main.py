@@ -36,6 +36,7 @@ def parse_timestamp(value, default=None):
 CONFIG = load_config("/opt/rotor-meteo/config/app.yaml")
 DB_PATH = CONFIG["storage"]["sqlite_path"]
 SSE_INTERVAL = float(CONFIG["web"].get("sse_interval_sec", 1.0))
+CAMERA = CONFIG.get("camera", {})
 
 app = FastAPI(title="Rotor Meteo")
 
@@ -44,6 +45,19 @@ def get_conn():
     conn = sqlite3.connect(DB_PATH, check_same_thread=False)
     conn.row_factory = sqlite3.Row
     return conn
+
+
+def build_rtsp_url():
+    host = CAMERA.get("host")
+    if not host:
+        return None
+    user = CAMERA.get("username") or ""
+    pwd = CAMERA.get("password") or ""
+    path = CAMERA.get("rtsp_path") or "/Streaming/Channels/101"
+    auth = ""
+    if user:
+        auth = f"{user}:{pwd}@" if pwd else f"{user}@"
+    return f"rtsp://{auth}{host}:554{path}"
 
 
 @app.get("/api/latest")
@@ -109,55 +123,97 @@ def api_stream():
     return StreamingResponse(event_stream(), media_type="text/event-stream")
 
 
+@app.get("/api/camera")
+def api_camera():
+    return {
+        "host": CAMERA.get("host"),
+        "rtsp_url": build_rtsp_url(),
+        "rtsp_path": CAMERA.get("rtsp_path"),
+    }
+
+
 @app.get("/")
 def index():
-    return HTMLResponse("""
+    rtsp = build_rtsp_url() or ""
+    return HTMLResponse(f"""
 <!doctype html>
 <html>
 <head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta charset=\"utf-8\">
+  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">
   <title>Rotor Meteo</title>
   <style>
-    body { font-family: Arial, sans-serif; margin: 16px; }
-    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; }
-    .card { border: 1px solid #ddd; border-radius: 8px; padding: 10px; }
-    canvas { width: 100%; height: 200px; border: 1px solid #eee; }
+    body {{ font-family: Arial, sans-serif; margin: 16px; }}
+    .tabs {{ display: flex; gap: 8px; margin-bottom: 12px; }}
+    .tab {{ padding: 8px 12px; border: 1px solid #ddd; border-radius: 6px; cursor: pointer; }}
+    .tab.active {{ background: #eee; }}
+    .panel {{ display: none; }}
+    .panel.active {{ display: block; }}
+    .grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; }}
+    .card {{ border: 1px solid #ddd; border-radius: 8px; padding: 10px; }}
+    canvas {{ width: 100%; height: 200px; border: 1px solid #eee; }}
+    .mono {{ font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, \"Liberation Mono\", monospace; }}
   </style>
 </head>
 <body>
   <h1>Rotor Meteo</h1>
-  <div id="latest" class="grid"></div>
+  <div class=\"tabs\">
+    <div class=\"tab active\" data-tab=\"dashboard\">Dashboard</div>
+    <div class=\"tab\" data-tab=\"camera\">Camera</div>
+  </div>
 
-  <h2>History</h2>
-  <label>Metric: <input id="metric" placeholder="temp_c" /></label>
-  <button onclick="loadHistory()">Load</button>
-  <canvas id="chart" width="600" height="200"></canvas>
+  <div id=\"dashboard\" class=\"panel active\">
+    <div id=\"latest\" class=\"grid\"></div>
+
+    <h2>History</h2>
+    <label>Metric: <input id=\"metric\" placeholder=\"temp_c\" /></label>
+    <button onclick=\"loadHistory()\">Load</button>
+    <canvas id=\"chart\" width=\"600\" height=\"200\"></canvas>
+  </div>
+
+  <div id=\"camera\" class=\"panel\">
+    <h2>Camera (RTSP)</h2>
+    <p>RTSP URL:</p>
+    <div class=\"mono\" id=\"rtsp\">{rtsp}</div>
+    <p>
+      Browser playback for RTSP is not supported directly. Use VLC or another RTSP client.
+    </p>
+    <p>
+      <a id=\"rtspLink\" href=\"{rtsp}\">Open RTSP in client</a>
+    </p>
+  </div>
 
   <script>
-    async function loadLatest() {
+    function setTab(name) {{
+      document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === name));
+      document.querySelectorAll('.panel').forEach(p => p.classList.toggle('active', p.id === name));
+    }}
+
+    document.querySelectorAll('.tab').forEach(t => t.addEventListener('click', () => setTab(t.dataset.tab)));
+
+    async function loadLatest() {{
       const res = await fetch('/api/latest');
       const data = await res.json();
       const el = document.getElementById('latest');
       el.innerHTML = '';
-      Object.keys(data).forEach(k => {
+      Object.keys(data).forEach(k => {{
         const v = data[k];
         const card = document.createElement('div');
         card.className = 'card';
-        card.innerHTML = `<strong>${k}</strong><br>${v.value} ${v.unit || ''}<br><small>${new Date(v.ts*1000).toLocaleString()}</small>`;
+        card.innerHTML = `<strong>${{k}}</strong><br>${{v.value}} ${{v.unit || ''}}<br><small>${{new Date(v.ts*1000).toLocaleString()}}</small>`;
         el.appendChild(card);
-      });
-    }
+      }});
+    }}
 
-    async function loadHistory() {
+    async function loadHistory() {{
       const metric = document.getElementById('metric').value.trim();
       if (!metric) return;
-      const res = await fetch(`/api/history?metric=${encodeURIComponent(metric)}`);
+      const res = await fetch(`/api/history?metric=${{encodeURIComponent(metric)}}`);
       const data = await res.json();
       drawChart(data);
-    }
+    }}
 
-    function drawChart(points) {
+    function drawChart(points) {{
       const canvas = document.getElementById('chart');
       const ctx = canvas.getContext('2d');
       ctx.clearRect(0,0,canvas.width,canvas.height);
@@ -168,15 +224,15 @@ def index():
       const minY = Math.min(...ys), maxY = Math.max(...ys);
       const pad = 10;
       ctx.beginPath();
-      points.forEach((p, i) => {
+      points.forEach((p, i) => {{
         const x = pad + (p.ts - minX) / (maxX - minX || 1) * (canvas.width - pad*2);
         const y = canvas.height - pad - (p.value - minY) / (maxY - minY || 1) * (canvas.height - pad*2);
         if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
-      });
+      }});
       ctx.strokeStyle = '#2a6';
       ctx.lineWidth = 2;
       ctx.stroke();
-    }
+    }}
 
     const evt = new EventSource('/api/stream');
     evt.onmessage = () => loadLatest();

@@ -3,7 +3,12 @@
 ## Current Operating Mode
 - No AP mode in use.
 - wlan0 connects to Wi-Fi network ROTORLINK.
-- eth0 reserved for CCTV camera and kept disconnected by default.
+- eth0 reserved for CCTV camera and provides DHCP on 192.168.50.0/24.
+- Pi camera-network IP: 192.168.50.1.
+
+## Camera
+- RTSP URL configured in config/app.yaml.
+- Default path: /Streaming/Channels/101.
 
 ## Services
 - mosquitto running locally.
