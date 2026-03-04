@@ -2,21 +2,23 @@
 set -euo pipefail
 
 ROOT=/opt/rotor-meteo
-VENV=$ROOT/.venv
+VENV=/.venv
 
-python3 -m venv "$VENV"
-"$VENV/bin/pip" install --upgrade pip
-"$VENV/bin/pip" install -r "$ROOT/requirements.txt"
+python3 -m venv  
+/bin/pip install --upgrade pip
+/bin/pip install -r /requirements.txt
 
-sudo mkdir -p /opt/rotor-meteo/data
+sudo mkdir -p /opt/rotor-meteo/data /opt/rotor-meteo/data/hls
 sudo chown -R aulamovil:aulamovil /opt/rotor-meteo/data
 
-sudo cp "$ROOT/scripts/systemd/rotor-collector.service" /etc/systemd/system/rotor-collector.service
-sudo cp "$ROOT/scripts/systemd/rotor-web.service" /etc/systemd/system/rotor-web.service
+sudo cp /scripts/systemd/rotor-collector.service /etc/systemd/system/rotor-collector.service
+sudo cp /scripts/systemd/rotor-web.service /etc/systemd/system/rotor-web.service
+sudo cp /scripts/systemd/rotor-camera.service /etc/systemd/system/rotor-camera.service
 sudo systemctl daemon-reload
 sudo systemctl enable --now rotor-collector.service
 sudo systemctl enable --now rotor-web.service
+sudo systemctl enable --now rotor-camera.service
 
 sudo systemctl enable --now mosquitto.service
 
-echo "Install complete."
+echo Install complete.

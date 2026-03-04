@@ -7,12 +7,14 @@
 - Pi camera-network IP: 192.168.50.1.
 
 ## Camera
-- RTSP URL configured in config/app.yaml.
-- Default path: /Streaming/Channels/101.
+- RTSP in config/app.yaml.
+- HLS served at /hls/stream.m3u8.
+- HLS.js served at /static/hls.min.js.
 
 ## Services
 - mosquitto running locally.
-- otor-collector and otor-web enabled and running.
+- otor-collector, otor-web, and otor-camera enabled and running.
+- isc-dhcp-server provides camera DHCP on eth0.
 
 ## Repo Location
 - Project repo: /opt/rotor-meteo

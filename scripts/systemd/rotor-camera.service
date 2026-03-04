@@ -1,0 +1,14 @@
+[Unit]
+Description=Rotor Camera RTSP to HLS
+After=network.target
+
+[Service]
+Type=simple
+User=aulamovil
+WorkingDirectory=/opt/rotor-meteo
+ExecStart=/opt/rotor-meteo/.venv/bin/python /opt/rotor-meteo/scripts/camera_hls.py
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 import yaml
 from fastapi import FastAPI, Query
 from fastapi.responses import HTMLResponse, StreamingResponse
+from fastapi.staticfiles import StaticFiles
 
 
 def load_config(path):
@@ -37,8 +38,11 @@ CONFIG = load_config("/opt/rotor-meteo/config/app.yaml")
 DB_PATH = CONFIG["storage"]["sqlite_path"]
 SSE_INTERVAL = float(CONFIG["web"].get("sse_interval_sec", 1.0))
 CAMERA = CONFIG.get("camera", {})
+HLS_DIR = CAMERA.get("hls_dir") or "/opt/rotor-meteo/data/hls"
 
 app = FastAPI(title="Rotor Meteo")
+app.mount("/static", StaticFiles(directory="/opt/rotor-meteo/web/static"), name="static")
+app.mount("/hls", StaticFiles(directory=HLS_DIR), name="hls")
 
 
 def get_conn():
@@ -58,6 +62,10 @@ def build_rtsp_url():
     if user:
         auth = f"{user}:{pwd}@" if pwd else f"{user}@"
     return f"rtsp://{auth}{host}:554{path}"
+
+
+def build_hls_url():
+    return "/hls/stream.m3u8"
 
 
 @app.get("/api/latest")
@@ -129,12 +137,14 @@ def api_camera():
         "host": CAMERA.get("host"),
         "rtsp_url": build_rtsp_url(),
         "rtsp_path": CAMERA.get("rtsp_path"),
+        "hls_url": build_hls_url(),
     }
 
 
 @app.get("/")
 def index():
     rtsp = build_rtsp_url() or ""
+    hls = build_hls_url()
     return HTMLResponse(f"""
 <!doctype html>
 <html>
@@ -153,6 +163,7 @@ def index():
     .card {{ border: 1px solid #ddd; border-radius: 8px; padding: 10px; }}
     canvas {{ width: 100%; height: 200px; border: 1px solid #eee; }}
     .mono {{ font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, \"Liberation Mono\", monospace; }}
+    video {{ width: 100%; max-width: 960px; background: #000; }}
   </style>
 </head>
 <body>
@@ -172,17 +183,16 @@ def index():
   </div>
 
   <div id=\"camera\" class=\"panel\">
-    <h2>Camera (RTSP)</h2>
+    <h2>Camera (Live)</h2>
+    <video id=\"video\" controls autoplay muted playsinline></video>
     <p>RTSP URL:</p>
-    <div class=\"mono\" id=\"rtsp\">{rtsp}</div>
+    <div class=\"mono\">{rtsp}</div>
     <p>
-      Browser playback for RTSP is not supported directly. Use VLC or another RTSP client.
-    </p>
-    <p>
-      <a id=\"rtspLink\" href=\"{rtsp}\">Open RTSP in client</a>
+      If video does not start, use VLC with the RTSP URL above.
     </p>
   </div>
 
+  <script src=\"/static/hls.min.js\"></script>
   <script>
     function setTab(name) {{
       document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === name));
@@ -234,9 +244,22 @@ def index():
       ctx.stroke();
     }}
 
+    function startVideo() {{
+      const video = document.getElementById('video');
+      const src = '{hls}';
+      if (video.canPlayType('application/vnd.apple.mpegurl')) {{
+        video.src = src;
+      }} else if (window.Hls && Hls.isSupported()) {{
+        const hls = new Hls();
+        hls.loadSource(src);
+        hls.attachMedia(video);
+      }}
+    }}
+
     const evt = new EventSource('/api/stream');
     evt.onmessage = () => loadLatest();
     loadLatest();
+    startVideo();
   </script>
 </body>
 </html>

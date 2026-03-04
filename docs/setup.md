@@ -6,8 +6,13 @@
 - Camera network DHCP range: 192.168.50.10 - 192.168.50.100
 - Pi on camera network: 192.168.50.1/24
 
-## Camera (RTSP)
-Default RTSP URL (configurable in config/app.yaml):
+## Camera (RTSP + HLS)
+We convert RTSP to HLS locally with ffmpeg.
+- HLS playlist: /hls/stream.m3u8
+- Web UI uses HLS.js from /static/hls.min.js
+- RTSP URL configured in config/app.yaml
+
+Example RTSP:
 `
 rtsp://<user>:<pass>@<camera-ip>:554/Streaming/Channels/101
 `
@@ -32,6 +37,7 @@ Payload (JSON):
 ## Services
 - otor-collector.service subscribes to MQTT, normalizes and writes to SQLite.
 - otor-web.service serves API + dashboard.
+- otor-camera.service runs ffmpeg to create HLS.
 
 ## API
 - GET /api/latest

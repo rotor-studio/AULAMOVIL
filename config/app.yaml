@@ -14,3 +14,4 @@ camera:
   rtsp_path: /Streaming/Channels/101
   username: admin
   password: REDACTED
+  hls_dir: /opt/rotor-meteo/data/hls
