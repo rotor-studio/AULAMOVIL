@@ -1,4 +1,4 @@
-import asyncio
+﻿import asyncio
 import json
 import os
 import sqlite3
@@ -264,6 +264,8 @@ def index():
       return METRIC_UNITS[id] || fallback || '';
     }}
 
+    const DASHBOARD_EXCLUDE = new Set(['wind_raw','wind_voltage_v','wind_current_ma']);
+
     async function loadLatest() {{
       const res = await fetch('/api/latest');
       const data = await res.json();
@@ -271,6 +273,7 @@ def index():
       el.innerHTML = '';
       Object.keys(data).forEach(k => {{
         const v = data[k];
+        if (DASHBOARD_EXCLUDE.has(v.metric_id)) return;
         const label = metricLabel(v.metric_id);
         const unit = metricUnit(v.metric_id, v.unit);
         const card = document.createElement('div');
@@ -374,3 +377,4 @@ def index():
 </body>
 </html>
 """)
+
