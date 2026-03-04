@@ -88,58 +88,120 @@ class Collector:
 
     def on_connect(self, client, userdata, flags, rc, properties=None):
         if rc == 0:
-            topic = f"{self.topic_prefix}/#"
-            client.subscribe(topic)
-            print(f"[collector] subscribed to {topic}")
+            client.subscribe(f"{self.topic_prefix}/#")
+            client.subscribe("meteo/wind/#")
+            print(f"[collector] subscribed to {self.topic_prefix}/# and meteo/wind/#")
         else:
             print(f"[collector] mqtt connect failed rc={rc}")
+
+    def store(self, ts, device_id, metric_id, value, unit, raw_json):
+        with self.conn:
+            self.conn.execute(
+                "INSERT INTO readings (ts, device_id, metric_id, value, unit, raw_json) VALUES (?, ?, ?, ?, ?, ?)",
+                (ts, device_id, metric_id, value, unit, raw_json),
+            )
+            self.conn.execute(
+                """
+                INSERT INTO latest (device_id, metric_id, ts, value, unit, raw_json)
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(device_id, metric_id)
+                DO UPDATE SET ts=excluded.ts, value=excluded.value, unit=excluded.unit, raw_json=excluded.raw_json
+                """,
+                (device_id, metric_id, ts, value, unit, raw_json),
+            )
+
+        with self.latest_lock:
+            self.latest[(device_id, metric_id)] = {
+                "ts": ts,
+                "device_id": device_id,
+                "metric_id": metric_id,
+                "value": value,
+                "unit": unit,
+            }
+
+    def handle_rotor_payload(self, topic, payload):
+        parts = topic.split("/")
+        if len(parts) < 4:
+            return
+        device_id = parts[2]
+        metric_id = parts[3]
+
+        if isinstance(payload, dict):
+            if "value" not in payload:
+                return
+            value = float(payload["value"])
+            unit = payload.get("unit")
+            ts = parse_timestamp(payload.get("ts"))
+            raw_json = json.dumps(payload, separators=(",", ":"))
+            self.store(ts, device_id, metric_id, value, unit, raw_json)
+            return
+
+        # If payload is a raw number
+        try:
+            value = float(payload)
+        except Exception:
+            return
+        ts = time.time()
+        self.store(ts, device_id, metric_id, value, None, json.dumps({"value": value}))
+
+    def handle_wind_payload(self, topic, payload):
+        # Accepts:
+        # - meteo/wind/json with JSON payload
+        # - meteo/wind/<metric> with raw numeric payload
+        parts = topic.split("/")
+        if len(parts) < 3:
+            return
+        device_id = "wind_esp8266"
+
+        if parts[2] == "json" and isinstance(payload, dict):
+            ts = parse_timestamp(payload.get("ts"))
+            mapping = {
+                "raw": ("wind_raw", None),
+                "voltage_v": ("wind_voltage_v", "V"),
+                "current_ma": ("wind_current_ma", "mA"),
+                "speed_ms": ("wind_speed_ms", "m/s"),
+            }
+            for k, (metric_id, unit) in mapping.items():
+                if k in payload:
+                    try:
+                        value = float(payload[k])
+                    except Exception:
+                        continue
+                    raw_json = json.dumps(payload, separators=(",", ":"))
+                    self.store(ts, device_id, metric_id, value, unit, raw_json)
+            return
+
+        # Non-json or other metric topic
+        metric_key = parts[2]
+        metric_id = {
+            "raw": "wind_raw",
+            "voltage_v": "wind_voltage_v",
+            "current_ma": "wind_current_ma",
+            "speed_ms": "wind_speed_ms",
+        }.get(metric_key)
+        if not metric_id:
+            return
+        try:
+            value = float(payload)
+        except Exception:
+            return
+        ts = time.time()
+        self.store(ts, device_id, metric_id, value, None, json.dumps({"value": value}))
 
     def on_message(self, client, userdata, msg):
         try:
             topic = msg.topic
-            parts = topic.split("/")
-            if len(parts) < 4:
-                return
-            if "/".join(parts[:2]) != "rotor/meteo":
-                return
-            device_id = parts[2]
-            metric_id = parts[3]
+            payload_raw = msg.payload.decode("utf-8")
+            payload = None
+            try:
+                payload = json.loads(payload_raw)
+            except Exception:
+                payload = payload_raw
 
-            payload = json.loads(msg.payload.decode("utf-8"))
-            if not isinstance(payload, dict):
-                return
-            if "value" not in payload:
-                return
-
-            value = float(payload["value"])
-            unit = payload.get("unit")
-            ts = parse_timestamp(payload.get("ts"))
-
-            raw_json = json.dumps(payload, separators=(",", ":"))
-
-            with self.conn:
-                self.conn.execute(
-                    "INSERT INTO readings (ts, device_id, metric_id, value, unit, raw_json) VALUES (?, ?, ?, ?, ?, ?)",
-                    (ts, device_id, metric_id, value, unit, raw_json),
-                )
-                self.conn.execute(
-                    """
-                    INSERT INTO latest (device_id, metric_id, ts, value, unit, raw_json)
-                    VALUES (?, ?, ?, ?, ?, ?)
-                    ON CONFLICT(device_id, metric_id)
-                    DO UPDATE SET ts=excluded.ts, value=excluded.value, unit=excluded.unit, raw_json=excluded.raw_json
-                    """,
-                    (device_id, metric_id, ts, value, unit, raw_json),
-                )
-
-            with self.latest_lock:
-                self.latest[(device_id, metric_id)] = {
-                    "ts": ts,
-                    "device_id": device_id,
-                    "metric_id": metric_id,
-                    "value": value,
-                    "unit": unit,
-                }
+            if topic.startswith("rotor/meteo/"):
+                self.handle_rotor_payload(topic, payload)
+            elif topic.startswith("meteo/wind/"):
+                self.handle_wind_payload(topic, payload)
         except Exception as exc:
             print(f"[collector] error: {exc}")
 

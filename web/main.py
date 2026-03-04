@@ -87,8 +87,7 @@ def build_hls_url():
     return "/hls/stream.m3u8"
 
 
-@app.get("/api/latest")
-def api_latest():
+def get_latest_map():
     conn = get_conn()
     rows = conn.execute("SELECT * FROM latest").fetchall()
     conn.close()
@@ -103,6 +102,11 @@ def api_latest():
             "unit": r["unit"],
         }
     return out
+
+
+@app.get("/api/latest")
+def api_latest():
+    return get_latest_map()
 
 
 @app.get("/api/history")
@@ -137,10 +141,7 @@ def api_stream():
     async def event_stream():
         last_hash = None
         while True:
-            conn = get_conn()
-            rows = conn.execute("SELECT * FROM latest ORDER BY device_id, metric_id").fetchall()
-            conn.close()
-            payload = json.dumps([dict(r) for r in rows], separators=(",", ":"))
+            payload = json.dumps(list(get_latest_map().values()), separators=(",", ":"))
             h = hash(payload)
             if h != last_hash:
                 last_hash = h
@@ -183,12 +184,15 @@ def index():
     canvas {{ width: 100%; height: 200px; border: 1px solid #eee; }}
     .mono {{ font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, \"Liberation Mono\", monospace; }}
     video {{ width: 100%; max-width: 960px; background: #000; }}
+    table {{ border-collapse: collapse; width: 100%; max-width: 720px; }}
+    th, td {{ border: 1px solid #ddd; padding: 6px 8px; text-align: left; }}
   </style>
 </head>
 <body>
   <h1>Rotor Meteo</h1>
   <div class=\"tabs\">
     <div class=\"tab active\" data-tab=\"dashboard\">Dashboard</div>
+    <div class=\"tab\" data-tab=\"wind\">Wind</div>
     <div class=\"tab\" data-tab=\"camera\">Camera</div>
   </div>
 
@@ -199,6 +203,14 @@ def index():
     <label>Metric: <input id=\"metric\" placeholder=\"temp_c\" /></label>
     <button onclick=\"loadHistory()\">Load</button>
     <canvas id=\"chart\" width=\"600\" height=\"200\"></canvas>
+  </div>
+
+  <div id=\"wind\" class=\"panel\">
+    <h2>Wind (ESP8266)</h2>
+    <table>
+      <thead><tr><th>Metric</th><th>Value</th><th>Updated</th></tr></thead>
+      <tbody id=\"windBody\"></tbody>
+    </table>
   </div>
 
   <div id=\"camera\" class=\"panel\">
@@ -231,6 +243,19 @@ def index():
         card.className = 'card';
         card.innerHTML = `<strong>${{k}}</strong><br>${{v.value}} ${{v.unit || ''}}<br><small>${{new Date(v.ts*1000).toLocaleString()}}</small>`;
         el.appendChild(card);
+      }});
+      renderWind(data);
+    }}
+
+    function renderWind(data) {{
+      const body = document.getElementById('windBody');
+      body.innerHTML = '';
+      const rows = Object.values(data).filter(v => v.device_id === 'wind_esp8266');
+      rows.sort((a,b) => a.metric_id.localeCompare(b.metric_id));
+      rows.forEach(v => {{
+        const tr = document.createElement('tr');
+        tr.innerHTML = `<td>${{v.metric_id}}</td><td>${{v.value}} ${{v.unit || ''}}</td><td>${{new Date(v.ts*1000).toLocaleString()}}</td>`;
+        body.appendChild(tr);
       }});
     }}
 

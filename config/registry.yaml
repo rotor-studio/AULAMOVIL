@@ -22,6 +22,10 @@ devices:
     name: Wind Sensor (planned)
     location: mast
     metrics: [wind_dir_deg, wind_speed_ms]
+  wind_esp8266:
+    name: Wind ESP8266
+    location: mast
+    metrics: [wind_raw, wind_voltage_v, wind_current_ma, wind_speed_ms]
 
 metrics:
   temp_c:
@@ -57,3 +61,12 @@ metrics:
   wind_speed_ms:
     name: Wind Speed
     unit: m/s
+  wind_raw:
+    name: Wind Raw
+    unit: adc
+  wind_voltage_v:
+    name: Wind Voltage
+    unit: V
+  wind_current_ma:
+    name: Wind Current
+    unit: mA
