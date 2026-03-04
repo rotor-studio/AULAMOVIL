@@ -25,7 +25,17 @@ devices:
   wind_esp8266:
     name: Wind ESP8266
     location: mast
-    metrics: [wind_raw, wind_voltage_v, wind_current_ma, wind_speed_ms]
+    metrics:
+      - wind_speed_ms
+      - wind_speed_raw
+      - wind_speed_ma
+      - wind_direction_deg
+      - wind_direction_raw
+      - wind_direction_ma
+      - wind_direction_cardinal
+      - wind_raw
+      - wind_voltage_v
+      - wind_current_ma
 
 metrics:
   temp_c:
@@ -70,3 +80,21 @@ metrics:
   wind_current_ma:
     name: Wind Current
     unit: mA
+  wind_speed_raw:
+    name: Wind Speed Raw
+    unit: adc
+  wind_speed_ma:
+    name: Wind Speed Current
+    unit: mA
+  wind_direction_deg:
+    name: Wind Direction
+    unit: deg
+  wind_direction_raw:
+    name: Wind Direction Raw
+    unit: adc
+  wind_direction_ma:
+    name: Wind Direction Current
+    unit: mA
+  wind_direction_cardinal:
+    name: Wind Direction (Cardinal)
+    unit: text

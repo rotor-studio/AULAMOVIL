@@ -1,4 +1,4 @@
-﻿import asyncio
+import asyncio
 import json
 import os
 import sqlite3
@@ -63,6 +63,8 @@ HLS_DIR = CAMERA.get("hls_dir") or "/opt/rotor-meteo/data/hls"
 # Optional human-friendly overrides
 LABEL_OVERRIDES = {
     "wind_speed_ms": "Velocidad del viento",
+    "wind_direction_deg": "Direcci?n del viento",
+    "wind_direction_cardinal": "Direcci?n del viento (cardinal)",
 }
 
 app = FastAPI(title="Rotor Meteo")
@@ -249,6 +251,12 @@ def index():
     const windSeries = [];
     const WIND_MAX_POINTS = 120;
 
+    const DASHBOARD_EXCLUDE = new Set([
+      'wind_raw','wind_voltage_v','wind_current_ma',
+      'wind_speed_raw','wind_speed_ma',
+      'wind_direction_raw','wind_direction_ma'
+    ]);
+
     function setTab(name) {{
       document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === name));
       document.querySelectorAll('.panel').forEach(p => p.classList.toggle('active', p.id === name));
@@ -263,8 +271,6 @@ def index():
     function metricUnit(id, fallback) {{
       return METRIC_UNITS[id] || fallback || '';
     }}
-
-    const DASHBOARD_EXCLUDE = new Set(['wind_raw','wind_voltage_v','wind_current_ma']);
 
     async function loadLatest() {{
       const res = await fetch('/api/latest');
@@ -293,7 +299,14 @@ def index():
         const tr = document.createElement('tr');
         const label = metricLabel(v.metric_id);
         const unit = metricUnit(v.metric_id, v.unit);
-        tr.innerHTML = `<td>${{label}}</td><td>${{v.value}} ${{unit}}</td><td>${{new Date(v.ts*1000).toLocaleString()}}</td>`;
+        let value = v.value;
+        if (v.metric_id === 'wind_direction_cardinal') {{
+          try {{
+            const raw = JSON.parse(v.raw_json || '{}');
+            value = raw.direction_cardinal || v.value;
+          }} catch(e) {{}}
+        }}
+        tr.innerHTML = `<td>${{label}}</td><td>${{value}} ${{unit}}</td><td>${{new Date(v.ts*1000).toLocaleString()}}</td>`;
         body.appendChild(tr);
       }});
 
@@ -377,4 +390,3 @@ def index():
 </body>
 </html>
 """)
-

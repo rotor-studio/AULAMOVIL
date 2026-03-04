@@ -160,6 +160,9 @@ class Collector:
                 "voltage_v": ("wind_voltage_v", "V"),
                 "current_ma": ("wind_current_ma", "mA"),
                 "speed_ms": ("wind_speed_ms", "m/s"),
+                "direction_deg": ("wind_direction_deg", "deg"),
+                "direction_raw": ("wind_direction_raw", None),
+                "direction_ma": ("wind_direction_ma", "mA"),
             }
             for k, (metric_id, unit) in mapping.items():
                 if k in payload:
@@ -171,22 +174,34 @@ class Collector:
                     self.store(ts, device_id, metric_id, value, unit, raw_json)
             return
 
-        # Non-json or other metric topic
         metric_key = parts[2]
-        metric_id = {
+        # Non-json or other metric topic
+        metric_map = {
             "raw": "wind_raw",
             "voltage_v": "wind_voltage_v",
             "current_ma": "wind_current_ma",
             "speed_ms": "wind_speed_ms",
-        }.get(metric_key)
-        if not metric_id:
+            "speed_raw": "wind_speed_raw",
+            "speed_ma": "wind_speed_ma",
+            "direction_deg": "wind_direction_deg",
+            "direction_raw": "wind_direction_raw",
+            "direction_ma": "wind_direction_ma",
+        }
+        metric_id = metric_map.get(metric_key)
+        if metric_id:
+            try:
+                value = float(payload)
+            except Exception:
+                return
+            ts = time.time()
+            self.store(ts, device_id, metric_id, value, None, json.dumps({"value": value}))
             return
-        try:
-            value = float(payload)
-        except Exception:
-            return
-        ts = time.time()
-        self.store(ts, device_id, metric_id, value, None, json.dumps({"value": value}))
+
+        if metric_key == "direction_cardinal":
+            # store as text? keep last in latest via raw_json, value=0
+            ts = time.time()
+            raw_json = json.dumps({"direction_cardinal": str(payload)}, separators=(",", ":"))
+            self.store(ts, device_id, "wind_direction_cardinal", 0.0, None, raw_json)
 
     def on_message(self, client, userdata, msg):
         try:
