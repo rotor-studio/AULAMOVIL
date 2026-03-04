@@ -1,0 +1,11 @@
+site_name: Rotor Studio Meteo
+mqtt:
+  host: 127.0.0.1
+  port: 1883
+  topic_prefix: rotor/meteo
+storage:
+  sqlite_path: /opt/rotor-meteo/data/rotor.db
+web:
+  host: 0.0.0.0
+  port: 8000
+  sse_interval_sec: 1.0

@@ -1,0 +1,59 @@
+# Device and metric registry for Rotor Meteo
+# Topic convention: rotor/meteo/<device_id>/<metric_id>
+
+devices:
+  bme280_local:
+    name: BME280 Local
+    location: enclosure
+    metrics: [temp_c, rh_pct, pressure_hpa]
+  rain_gauge_1:
+    name: Rain Gauge 1
+    location: roof
+    metrics: [rain_mm]
+  pm_sensor_1:
+    name: PM Sensor 1
+    location: outdoors
+    metrics: [pm10_ugm3, pm2_5_ugm3]
+  gps_usb_1:
+    name: GPS USB
+    location: enclosure
+    metrics: [gps_lat, gps_lon, gps_alt]
+  wind_1:
+    name: Wind Sensor (planned)
+    location: mast
+    metrics: [wind_dir_deg, wind_speed_ms]
+
+metrics:
+  temp_c:
+    name: Temperature
+    unit: C
+  rh_pct:
+    name: Relative Humidity
+    unit: pct
+  pressure_hpa:
+    name: Pressure
+    unit: hPa
+  rain_mm:
+    name: Rainfall
+    unit: mm
+  pm10_ugm3:
+    name: PM10
+    unit: ug/m3
+  pm2_5_ugm3:
+    name: PM2.5
+    unit: ug/m3
+  gps_lat:
+    name: GPS Latitude
+    unit: deg
+  gps_lon:
+    name: GPS Longitude
+    unit: deg
+  gps_alt:
+    name: GPS Altitude
+    unit: m
+  wind_dir_deg:
+    name: Wind Direction
+    unit: deg
+  wind_speed_ms:
+    name: Wind Speed
+    unit: m/s
