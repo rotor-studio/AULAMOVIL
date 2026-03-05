@@ -208,6 +208,7 @@ def index():
     .compass {{ width: 120px; height: 120px; border: 2px solid #333; border-radius: 50%; position: relative; }}
     .compass .needle {{ position: absolute; left: 50%; top: 10%; width: 2px; height: 45%; background: #c0392b; transform-origin: bottom center; }}
     .compass .center {{ position: absolute; left: 50%; top: 50%; width: 8px; height: 8px; background: #333; border-radius: 50%; transform: translate(-50%, -50%); }}
+    .cam-thumb {{ width: 100%; max-width: 240px; border: 1px solid #ddd; border-radius: 6px; margin-top: 6px; }}
   </style>
 </head>
 <body>
@@ -218,6 +219,7 @@ def index():
     <div class=\"tab\" data-tab=\"rain\">Pluviometro</div>
     <div class=\"tab\" data-tab=\"bme\">Temp/Humedad/Presion</div>
     <div class=\"tab\" data-tab=\"air\">PM & Aire</div>
+    <div class=\"tab\" data-tab=\"gps\">Posicion</div>
     <div class=\"tab\" data-tab=\"camera\">Camera</div>
   </div>
 
@@ -261,6 +263,14 @@ def index():
     <table>
       <thead><tr><th>Metrica</th><th>Valor</th><th>Actualizado</th></tr></thead>
       <tbody id=\"airBody\"></tbody>
+    </table>
+  </div>
+
+  <div id=\"gps\" class=\"panel\">
+    <h2>Posicion (GPS)</h2>
+    <table>
+      <thead><tr><th>Metrica</th><th>Valor</th><th>Actualizado</th></tr></thead>
+      <tbody id=\"gpsBody\"></tbody>
     </table>
   </div>
 
@@ -360,6 +370,12 @@ def index():
       return card;
     }}
 
+    function updateCameraThumb() {
+      const img = document.getElementById(\"camThumb\");
+      if (!img) return;
+      img.src = `/hls/latest.jpg?ts=${{Date.now()}}`;
+    }
+
     function buildCameraCard() {{
       const card = document.createElement('div');
       card.className = 'card';
@@ -408,6 +424,7 @@ def index():
       renderSimpleTable('rainBody', ['rain_mm'], data);
       renderSimpleTable('bmeBody', ['temp_c','rh_pct','pressure_hpa'], data);
       renderSimpleTable('airBody', ['pm10_ugm3','pm2_5_ugm3'], data);
+      renderSimpleTable('gpsBody', ['gps_lat','gps_lon','gps_alt'], data);
     }}
 
     function renderWind(data) {{

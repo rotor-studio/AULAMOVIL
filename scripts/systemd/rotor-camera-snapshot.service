@@ -1,0 +1,14 @@
+[Unit]
+Description=Rotor Camera Snapshot
+After=network.target
+
+[Service]
+Type=simple
+User=aulamovil
+WorkingDirectory=/opt/rotor-meteo
+ExecStart=/opt/rotor-meteo/.venv/bin/python /opt/rotor-meteo/scripts/camera_snapshot.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
