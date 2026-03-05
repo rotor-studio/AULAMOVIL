@@ -209,10 +209,6 @@ def index():
     .compass .needle {{ position: absolute; left: 50%; top: 10%; width: 2px; height: 45%; background: #c0392b; transform-origin: bottom center; }}
     .compass .center {{ position: absolute; left: 50%; top: 50%; width: 8px; height: 8px; background: #333; border-radius: 50%; transform: translate(-50%, -50%); }}
     .cam-thumb {{ width: 100%; max-width: 240px; border: 1px solid #ddd; border-radius: 6px; margin-top: 6px; }}
-    .gps-box {{ display: flex; gap: 12px; flex-wrap: wrap; align-items: flex-start; }}
-    .gps-map {{ width: 320px; height: 220px; border: 1px solid #ddd; border-radius: 6px; }}
-    .gps-actions {{ display: flex; gap: 8px; margin-top: 6px; }}
-    .gps-actions button {{ padding: 6px 10px; }}
   </style>
 </head>
 <body>
@@ -276,8 +272,17 @@ def index():
       <thead><tr><th>Metrica</th><th>Valor</th><th>Actualizado</th></tr></thead>
       <tbody id=\"gpsBody\"></tbody>
     </table>
+    <div class=\"gps-box\">
+      <div>
+        <div id=\"gpsText\">Sin datos</div>
+        <div class=\"gps-actions\">
+          <button onclick=\"copyGps()\">Copiar coordenadas</button>
+          <a id=\"gpsOsmLink\" target=\"_blank\" rel=\"noopener\">Abrir mapa</a>
+        </div>
+      </div>
+      <iframe id=\"gpsMap\" class=\"gps-map\" loading=\"lazy\"></iframe>
+    </div>
   </div>
-
   <div id=\"camera\" class=\"panel\">
     <h2>Camera (Live)</h2>
     <video id=\"video\" controls autoplay muted playsinline></video>
@@ -405,7 +410,14 @@ def index():
         ['Lluvia acumulada', rain ? `${{rain.value}} ${{metricUnit('rain_mm', rain.unit)}}` : '--']
       ], rain ? rain.ts : 0));
 
-      el.appendChild(buildBmeSummary(data));
+      const t = getMetric(data, 'temp_c');
+      const rh = getMetric(data, 'rh_pct');
+      const p = getMetric(data, 'pressure_hpa');
+      el.appendChild(buildSummaryCard('Temp / Humedad / Presion', [
+        ['Temperatura', t ? `${{t.value}} ${{metricUnit('temp_c', t.unit)}}` : '--'],
+        ['Humedad', rh ? `${{rh.value}} ${{metricUnit('rh_pct', rh.unit)}}` : '--'],
+        ['Presion', p ? `${{p.value}} ${{metricUnit('pressure_hpa', p.unit)}}` : '--']
+      ], max_ts(t, rh, p)));
 
       const pm10 = getMetric(data, 'pm10_ugm3');
       const pm25 = getMetric(data, 'pm2_5_ugm3');
@@ -422,114 +434,8 @@ def index():
       renderSimpleTable('bmeBody', ['temp_c','rh_pct','pressure_hpa'], data);
       renderSimpleTable('airBody', ['pm10_ugm3','pm2_5_ugm3'], data);
       renderSimpleTable('gpsBody', ['gps_lat','gps_lon','gps_alt'], data);
-      renderGPS(data);
     }}
 
-
-
-    function renderGPS(data) {{
-      const lat = getMetric(data, 'gps_lat');
-      const lon = getMetric(data, 'gps_lon');
-      const alt = getMetric(data, 'gps_alt');
-
-      const gpsText = document.getElementById('gpsText');
-      const gpsMap = document.getElementById('gpsMap');
-      const gpsLink = document.getElementById('gpsOsmLink');
-      if (!gpsText || !gpsMap || !gpsLink) return;
-
-      if (!lat || !lon) {{
-        gpsText.textContent = 'Sin datos';
-        gpsMap.src = '';
-        gpsLink.removeAttribute('href');
-        return;
-      }}
-
-      const latv = Number(lat.value);
-      const lonv = Number(lon.value);
-      const altv = alt ? Number(alt.value) : null;
-      const dms = toDMS(latv, lonv);
-      gpsText.textContent = `Lat: ${{latv.toFixed(6)}}  Lon: ${{lonv.toFixed(6)}}${{altv !== null ? `  Alt: ${{altv.toFixed(1)}} m` : ''}}  (${{dms}})`;
-
-      const delta = 0.01;
-      const bbox = `${{lonv-delta}},${{latv-delta}},${{lonv+delta}},${{latv+delta}}`;
-      gpsMap.src = `https://www.openstreetmap.org/export/embed.html?bbox=${{bbox}}&layer=mapnik&marker=${{latv}},${{lonv}}`;
-      gpsLink.href = `https://www.openstreetmap.org/?mlat=${{latv}}&mlon=${{lonv}}#map=15/${{latv}}/${{lonv}}`;
-    }}
-
-    function toDMS(lat, lon) {{
-      function conv(v, pos, neg) {{
-        const dir = v >= 0 ? pos : neg;
-        const av = Math.abs(v);
-        const deg = Math.floor(av);
-        const minFloat = (av - deg) * 60;
-        const min = Math.floor(minFloat);
-        const sec = ((minFloat - min) * 60).toFixed(1);
-        return `${{deg}}d${{min}}'${{sec}}" ${{dir}}`;
-      }}
-      return `${{conv(lat, 'N', 'S')}}, ${{conv(lon, 'E', 'O')}}`;
-    }}
-
-    function copyGps() {{
-      const gpsText = document.getElementById('gpsText');
-      if (!gpsText) return;
-      const text = gpsText.textContent || '';
-      if (navigator.clipboard && text) {{
-        navigator.clipboard.writeText(text);
-      }}
-    }}
-
-    function buildBmeSummary(data) {{
-      const entries = Object.values(data).filter(v => ['temp_c','rh_pct','pressure_hpa'].includes(v.metric_id));
-      const byDevice = {{}};
-      entries.forEach(v => {{
-        if (!byDevice[v.device_id]) byDevice[v.device_id] = {{}};
-        byDevice[v.device_id][v.metric_id] = v;
-      }});
-
-      const deviceIds = Object.keys(byDevice);
-      if (deviceIds.length === 0) {{
-        return buildSummaryCard('Temp / Humedad / Presion', [
-          ['Temperatura', '--'],
-          ['Humedad', '--'],
-          ['Presion', '--']
-        ], 0);
-      }}
-
-      deviceIds.sort((a,b) => (a === 'bme280_local') ? -1 : (b === 'bme280_local') ? 1 : a.localeCompare(b));
-      const main = deviceIds[0];
-      const secondary = deviceIds[1];
-
-      const mainT = byDevice[main].temp_c ? `${{byDevice[main].temp_c.value}} ${{metricUnit('temp_c', byDevice[main].temp_c.unit)}}` : '--';
-      const mainRH = byDevice[main].rh_pct ? `${{byDevice[main].rh_pct.value}} ${{metricUnit('rh_pct', byDevice[main].rh_pct.unit)}}` : '--';
-      const mainP = byDevice[main].pressure_hpa ? `${{byDevice[main].pressure_hpa.value}} ${{metricUnit('pressure_hpa', byDevice[main].pressure_hpa.unit)}}` : '--';
-
-      const rows = [
-        ['Temperatura', mainT],
-        ['Humedad', mainRH],
-        ['Presion', mainP],
-      ];
-
-      if (secondary) {{
-        const sec = byDevice[secondary];
-        let label = 'Sensor 2';
-        const lid = secondary.toLowerCase();
-        if (lid.includes('ground') || lid.includes('suelo')) label = 'Suelo';
-        if (lid.includes('shade') || lid.includes('sombra')) label = 'Sombra';
-
-        const secT = sec.temp_c ? `${{sec.temp_c.value}} ${{metricUnit('temp_c', sec.temp_c.unit)}}` : '--';
-        const secRH = sec.rh_pct ? `${{sec.rh_pct.value}} ${{metricUnit('rh_pct', sec.rh_pct.unit)}}` : '--';
-        rows.push([`Temp (${{label}})`, secT]);
-        rows.push([`Hum (${{label}})`, secRH]);
-      }}
-
-      const ts = Math.max(...deviceIds.map(d => Math.max(
-        byDevice[d].temp_c ? byDevice[d].temp_c.ts : 0,
-        byDevice[d].rh_pct ? byDevice[d].rh_pct.ts : 0,
-        byDevice[d].pressure_hpa ? byDevice[d].pressure_hpa.ts : 0,
-      )));
-
-      return buildSummaryCard('Temp / Humedad / Presion', rows, ts);
-    }}
     function renderWind(data) {{
       const body = document.getElementById('windBody');
       body.innerHTML = '';
@@ -630,6 +536,7 @@ def index():
 </body>
 </html>
 """)
+
 
 
 
