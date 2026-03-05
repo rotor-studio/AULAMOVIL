@@ -370,16 +370,16 @@ def index():
       return card;
     }}
 
-    function updateCameraThumb() {
+    function updateCameraThumb() {{
       const img = document.getElementById(\"camThumb\");
       if (!img) return;
       img.src = `/hls/latest.jpg?ts=${{Date.now()}}`;
-    }
+    }}
 
     function buildCameraCard() {{
       const card = document.createElement('div');
       card.className = 'card';
-      card.innerHTML = `<strong>Camara</strong><div>Estado: <span id="camStatus">Comprobando...</span></div><div><small>Ver pestana Camera</small></div>`;
+      card.innerHTML = `<strong>Camara</strong><div>Estado: <span id="camStatus">Comprobando...</span></div><img id="camThumb" class="cam-thumb" src="/hls/latest.jpg" /><div><small>Ver pestana Camera</small></div>`;
       fetch('/hls/stream.m3u8', {{ method: 'GET', cache: 'no-store' }})
         .then(r => {{ document.getElementById('camStatus').textContent = r.ok ? 'Online' : 'Offline'; }})
         .catch(() => {{ document.getElementById('camStatus').textContent = 'Offline'; }});
