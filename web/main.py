@@ -215,6 +215,9 @@ def index():
   <div class=\"tabs\">
     <div class=\"tab active\" data-tab=\"dashboard\">Dashboard</div>
     <div class=\"tab\" data-tab=\"wind\">Wind</div>
+    <div class=\"tab\" data-tab=\"rain\">Pluviometro</div>
+    <div class=\"tab\" data-tab=\"bme\">Temp/Humedad/Presion</div>
+    <div class=\"tab\" data-tab=\"air\">PM & Aire</div>
     <div class=\"tab\" data-tab=\"camera\">Camera</div>
   </div>
 
@@ -235,6 +238,30 @@ def index():
     </table>
     <h3>Velocidad del viento (tiempo real)</h3>
     <canvas id=\"windChart\" width=\"700\" height=\"220\"></canvas>
+  </div>
+
+  <div id=\"rain\" class=\"panel\">
+    <h2>Pluviometro</h2>
+    <table>
+      <thead><tr><th>Metrica</th><th>Valor</th><th>Actualizado</th></tr></thead>
+      <tbody id=\"rainBody\"></tbody>
+    </table>
+  </div>
+
+  <div id=\"bme\" class=\"panel\">
+    <h2>Temperatura / Humedad / Presion</h2>
+    <table>
+      <thead><tr><th>Metrica</th><th>Valor</th><th>Actualizado</th></tr></thead>
+      <tbody id=\"bmeBody\"></tbody>
+    </table>
+  </div>
+
+  <div id=\"air\" class=\"panel\">
+    <h2>PM10 / PM2.5 y Calidad del Aire</h2>
+    <table>
+      <thead><tr><th>Metrica</th><th>Valor</th><th>Actualizado</th></tr></thead>
+      <tbody id=\"airBody\"></tbody>
+    </table>
   </div>
 
   <div id=\"camera\" class=\"panel\">
@@ -315,6 +342,35 @@ def index():
       return METRIC_UNITS[id] || fallback || '';
     }}
 
+    function getMetric(data, id) {{
+      const key = Object.keys(data).find(k => data[k].metric_id === id);
+      return key ? data[key] : null;
+    }}
+
+    function max_ts(...items) {{
+      return Math.max(...items.map(i => i ? i.ts : 0));
+    }}
+
+    function buildSummaryCard(title, rows, ts) {{
+      const card = document.createElement('div');
+      card.className = 'card';
+      const timeText = ts ? new Date(ts*1000).toLocaleString() : '';
+      const rowsHtml = rows.map(r => `<div>${{r[0]}}: ${{r[1]}}</div>`).join('');
+      card.innerHTML = `<strong>${{title}}</strong>${{rowsHtml}}<div><small>${{timeText}}</small></div>`;
+      return card;
+    }}
+
+    function buildCameraCard() {{
+      const card = document.createElement('div');
+      card.className = 'card';
+      card.innerHTML = `<strong>Camara</strong><div>Estado: <span id="camStatus">Comprobando...</span></div><div><small>Ver pestana Camera</small></div>`;
+      fetch('/hls/stream.m3u8', {{ method: 'GET', cache: 'no-store' }})
+        .then(r => {{ document.getElementById('camStatus').textContent = r.ok ? 'Online' : 'Offline'; }})
+        .catch(() => {{ document.getElementById('camStatus').textContent = 'Offline'; }});
+      return card;
+    }}
+
+
     async function loadLatest() {{
       const res = await fetch('/api/latest');
       const data = await res.json();
@@ -324,17 +380,34 @@ def index():
       const windCard = buildWindCard(data);
       if (windCard) el.appendChild(windCard);
 
-      Object.keys(data).forEach(k => {{
-        const v = data[k];
-        if (isWindMetric(v.metric_id)) return;
-        const label = metricLabel(v.metric_id);
-        const unit = metricUnit(v.metric_id, v.unit);
-        const card = document.createElement('div');
-        card.className = 'card';
-        card.innerHTML = `<strong>${{label}}</strong><br>${{v.value}} ${{unit}}<br><small>${{new Date(v.ts*1000).toLocaleString()}}</small>`;
-        el.appendChild(card);
-      }});
+      const rain = getMetric(data, 'rain_mm');
+      el.appendChild(buildSummaryCard('Pluviometro', [
+        ['Lluvia acumulada', rain ? `${{rain.value}} ${{metricUnit('rain_mm', rain.unit)}}` : '--']
+      ], rain ? rain.ts : 0));
+
+      const t = getMetric(data, 'temp_c');
+      const rh = getMetric(data, 'rh_pct');
+      const p = getMetric(data, 'pressure_hpa');
+      el.appendChild(buildSummaryCard('Temp / Humedad / Presion', [
+        ['Temperatura', t ? `${{t.value}} ${{metricUnit('temp_c', t.unit)}}` : '--'],
+        ['Humedad', rh ? `${{rh.value}} ${{metricUnit('rh_pct', rh.unit)}}` : '--'],
+        ['Presion', p ? `${{p.value}} ${{metricUnit('pressure_hpa', p.unit)}}` : '--']
+      ], max_ts(t, rh, p)));
+
+      const pm10 = getMetric(data, 'pm10_ugm3');
+      const pm25 = getMetric(data, 'pm2_5_ugm3');
+      el.appendChild(buildSummaryCard('PM / Calidad del aire', [
+        ['PM10', pm10 ? `${{pm10.value}} ${{metricUnit('pm10_ugm3', pm10.unit)}}` : '--'],
+        ['PM2.5', pm25 ? `${{pm25.value}} ${{metricUnit('pm2_5_ugm3', pm25.unit)}}` : '--']
+      ], max_ts(pm10, pm25)));
+
+      const camCard = buildCameraCard();
+      if (camCard) el.appendChild(camCard);
+
       renderWind(data);
+      renderSimpleTable('rainBody', ['rain_mm'], data);
+      renderSimpleTable('bmeBody', ['temp_c','rh_pct','pressure_hpa'], data);
+      renderSimpleTable('airBody', ['pm10_ugm3','pm2_5_ugm3'], data);
     }}
 
     function renderWind(data) {{
