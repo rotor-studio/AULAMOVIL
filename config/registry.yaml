@@ -6,6 +6,10 @@ devices:
     name: BME280 Local
     location: enclosure
     metrics: [temp_c, rh_pct, pressure_hpa]
+  bme280_ground:
+    name: BME280 Suelo Sombra
+    location: ground shade
+    metrics: [temp_ground_c, rh_ground_pct]
   rain_gauge_1:
     name: Rain Gauge 1
     location: roof
@@ -47,6 +51,12 @@ metrics:
   pressure_hpa:
     name: Pressure
     unit: hPa
+  temp_ground_c:
+    name: Temperatura suelo (sombra)
+    unit: C
+  rh_ground_pct:
+    name: Humedad suelo (sombra)
+    unit: pct
   rain_mm:
     name: Rainfall
     unit: mm

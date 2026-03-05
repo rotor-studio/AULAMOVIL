@@ -7,6 +7,12 @@ from datetime import datetime, timezone
 
 import yaml
 import paho.mqtt.client as mqtt
+try:
+    import serial
+    import pynmea2
+except Exception:  # optional deps
+    serial = None
+    pynmea2 = None
 
 
 def load_config(path):
@@ -78,6 +84,7 @@ class Collector:
 
         self.latest = {}
         self.latest_lock = threading.Lock()
+        self.db_lock = threading.Lock()
 
         self.conn = sqlite3.connect(self.db_path, check_same_thread=False)
         init_db(self.conn)
@@ -85,6 +92,9 @@ class Collector:
         self.client = mqtt.Client()
         self.client.on_connect = self.on_connect
         self.client.on_message = self.on_message
+
+        self.gps_cfg = self.config.get("gps", {})
+        self.gps_thread = None
 
     def on_connect(self, client, userdata, flags, rc, properties=None):
         if rc == 0:
@@ -95,20 +105,21 @@ class Collector:
             print(f"[collector] mqtt connect failed rc={rc}")
 
     def store(self, ts, device_id, metric_id, value, unit, raw_json):
-        with self.conn:
-            self.conn.execute(
-                "INSERT INTO readings (ts, device_id, metric_id, value, unit, raw_json) VALUES (?, ?, ?, ?, ?, ?)",
-                (ts, device_id, metric_id, value, unit, raw_json),
-            )
-            self.conn.execute(
-                """
-                INSERT INTO latest (device_id, metric_id, ts, value, unit, raw_json)
-                VALUES (?, ?, ?, ?, ?, ?)
-                ON CONFLICT(device_id, metric_id)
-                DO UPDATE SET ts=excluded.ts, value=excluded.value, unit=excluded.unit, raw_json=excluded.raw_json
-                """,
-                (device_id, metric_id, ts, value, unit, raw_json),
-            )
+        with self.db_lock:
+            with self.conn:
+                self.conn.execute(
+                    "INSERT INTO readings (ts, device_id, metric_id, value, unit, raw_json) VALUES (?, ?, ?, ?, ?, ?)",
+                    (ts, device_id, metric_id, value, unit, raw_json),
+                )
+                self.conn.execute(
+                    """
+                    INSERT INTO latest (device_id, metric_id, ts, value, unit, raw_json)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(device_id, metric_id)
+                    DO UPDATE SET ts=excluded.ts, value=excluded.value, unit=excluded.unit, raw_json=excluded.raw_json
+                    """,
+                    (device_id, metric_id, ts, value, unit, raw_json),
+                )
 
         with self.latest_lock:
             self.latest[(device_id, metric_id)] = {
@@ -220,9 +231,82 @@ class Collector:
         except Exception as exc:
             print(f"[collector] error: {exc}")
 
+    def gps_enabled(self):
+        return bool(self.gps_cfg.get("enabled", False))
+
+    def gps_read_loop(self):
+        if serial is None or pynmea2 is None:
+            print("[collector] GPS deps not installed (pyserial, pynmea2).", flush=True)
+            return
+        device = self.gps_cfg.get("device", "/dev/ttyACM0")
+        baud = int(self.gps_cfg.get("baud", 9600))
+        device_id = self.gps_cfg.get("device_id", "gps_usb_1")
+        min_interval = float(self.gps_cfg.get("min_interval_sec", 1.0))
+        last_emit = 0.0
+        print(f"[collector] GPS reading from {device} @ {baud}", flush=True)
+        while True:
+            try:
+                with serial.Serial(device, baud, timeout=1) as ser:
+                    while True:
+                        line = ser.readline().decode("ascii", errors="ignore").strip()
+                        if not line.startswith("$"):
+                            continue
+                        try:
+                            msg = pynmea2.parse(line)
+                        except Exception:
+                            continue
+                        now = time.time()
+                        if now - last_emit < min_interval:
+                            continue
+
+                        lat = None
+                        lon = None
+                        alt = None
+                        valid = False
+
+                        if msg.sentence_type in ("RMC", "GLL"):
+                            # RMC has status, GLL has status too
+                            status = getattr(msg, "status", None)
+                            if status in (None, "A"):
+                                lat = msg.latitude if hasattr(msg, "latitude") else None
+                                lon = msg.longitude if hasattr(msg, "longitude") else None
+                                valid = lat is not None and lon is not None
+                        elif msg.sentence_type == "GGA":
+                            try:
+                                fix = int(getattr(msg, "gps_qual", 0))
+                            except Exception:
+                                fix = 0
+                            if fix > 0:
+                                lat = msg.latitude if hasattr(msg, "latitude") else None
+                                lon = msg.longitude if hasattr(msg, "longitude") else None
+                                try:
+                                    alt = float(getattr(msg, "altitude", None))
+                                except Exception:
+                                    alt = None
+                                valid = lat is not None and lon is not None
+
+                        if not valid:
+                            continue
+
+                        raw_json = json.dumps(
+                            {"lat": lat, "lon": lon, "alt": alt}, separators=(",", ":")
+                        )
+                        ts = now
+                        self.store(ts, device_id, "gps_lat", float(lat), "deg", raw_json)
+                        self.store(ts, device_id, "gps_lon", float(lon), "deg", raw_json)
+                        if alt is not None:
+                            self.store(ts, device_id, "gps_alt", float(alt), "m", raw_json)
+                        last_emit = now
+            except Exception as exc:
+                print(f"[collector] GPS error: {exc}", flush=True)
+                time.sleep(2)
+
     def run(self):
         host = self.config["mqtt"]["host"]
         port = int(self.config["mqtt"]["port"])
+        if self.gps_enabled():
+            self.gps_thread = threading.Thread(target=self.gps_read_loop, daemon=True)
+            self.gps_thread.start()
         self.client.connect(host, port, keepalive=60)
         self.client.loop_forever()
 

@@ -14,3 +14,9 @@ camera:
   rtsp_path: /Streaming/Channels/101
   username: admin
   hls_dir: /opt/rotor-meteo/data/hls
+gps:
+  enabled: true
+  device: /dev/ttyACM0
+  baud: 9600
+  device_id: gps_usb_1
+  min_interval_sec: 1.0
