@@ -14,6 +14,10 @@ devices:
     name: Rain Gauge 1
     location: roof
     metrics: [rain_mm]
+  rain_node_mcu:
+    name: Rain NodeMCU
+    location: roof
+    metrics: [rain_tips_total, rain_mm_total, rain_mm_interval, rain_rate_mmh, rain_last_tip_ms, rain_since_last_tip_ms]
   pm_sensor_1:
     name: PM Sensor 1
     location: outdoors
@@ -60,6 +64,24 @@ metrics:
   rain_mm:
     name: Rainfall
     unit: mm
+  rain_tips_total:
+    name: Rain Tips Total
+    unit: count
+  rain_mm_total:
+    name: Rainfall Total
+    unit: mm
+  rain_mm_interval:
+    name: Rainfall Interval
+    unit: mm
+  rain_rate_mmh:
+    name: Rain Rate
+    unit: mm/h
+  rain_last_tip_ms:
+    name: Last Tip
+    unit: ms
+  rain_since_last_tip_ms:
+    name: Since Last Tip
+    unit: ms
   pm10_ugm3:
     name: PM10
     unit: ug/m3

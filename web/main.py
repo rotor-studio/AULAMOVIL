@@ -2,6 +2,7 @@
 import json
 import os
 import sqlite3
+import threading
 import time
 from datetime import datetime, timezone
 
@@ -59,17 +60,31 @@ DB_PATH = CONFIG["storage"]["sqlite_path"]
 SSE_INTERVAL = float(CONFIG["web"].get("sse_interval_sec", 1.0))
 CAMERA = CONFIG.get("camera", {})
 HLS_DIR = CAMERA.get("hls_dir") or "/opt/rotor-meteo/data/hls"
+TIMELAPSE_DIR = CAMERA.get("timelapse_dir") or "/opt/rotor-meteo/data/timelapse"
+CAMERA_STALE_SEC = float(CONFIG.get("camera", {}).get("stale_sec", 20))
+
+timelapse_lock = threading.Lock()
+timelapse_thread = None
+timelapse_stop = threading.Event()
+timelapse_interval = 60
 
 # Optional human-friendly overrides
 LABEL_OVERRIDES = {
     "wind_speed_ms": "Velocidad del viento",
-    "wind_direction_deg": "Direcci?n del viento",
-    "wind_direction_cardinal": "Direcci?n del viento (cardinal)",
+    "wind_direction_deg": "Dirección del viento",
+    "wind_direction_cardinal": "Dirección del viento (cardinal)",
+    "rain_tips_total": "Lluvia (tics totales)",
+    "rain_mm_total": "Lluvia acumulada",
+    "rain_mm_interval": "Lluvia intervalo",
+    "rain_rate_mmh": "Intensidad de lluvia",
+    "rain_last_tip_ms": "Último tic (ms)",
+    "rain_since_last_tip_ms": "Tiempo desde último tic (ms)",
 }
 
 app = FastAPI(title="Rotor Meteo")
 app.mount("/static", StaticFiles(directory="/opt/rotor-meteo/web/static"), name="static")
 app.mount("/hls", StaticFiles(directory=HLS_DIR), name="hls")
+app.mount("/timelapse", StaticFiles(directory=TIMELAPSE_DIR), name="timelapse")
 
 
 def get_conn():
@@ -93,6 +108,104 @@ def build_rtsp_url():
 
 def build_hls_url():
     return "/hls/stream.m3u8"
+
+
+def ensure_timelapse_dir():
+    os.makedirs(TIMELAPSE_DIR, exist_ok=True)
+
+
+def capture_timelapse_frame():
+    # Copy latest snapshot if available; fallback to fetch snapshot endpoint.
+    ensure_timelapse_dir()
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    dest = os.path.join(TIMELAPSE_DIR, f"frame_{ts}.jpg")
+    src = os.path.join(HLS_DIR, "latest.jpg")
+    try:
+        if os.path.exists(src):
+            with open(src, "rb") as fsrc, open(dest, "wb") as fdst:
+                fdst.write(fsrc.read())
+            return dest
+    except Exception:
+        pass
+    # If no latest.jpg, just skip
+    return None
+
+
+def timelapse_loop():
+    global timelapse_interval
+    while not timelapse_stop.is_set():
+        capture_timelapse_frame()
+        timelapse_stop.wait(timelapse_interval)
+
+
+def timelapse_running():
+    return timelapse_thread is not None and timelapse_thread.is_alive()
+
+
+def start_timelapse(interval_sec: int):
+    global timelapse_thread, timelapse_interval
+    with timelapse_lock:
+        timelapse_interval = max(1, int(interval_sec))
+        if timelapse_running():
+            return
+        timelapse_stop.clear()
+        timelapse_thread = threading.Thread(target=timelapse_loop, daemon=True)
+        timelapse_thread.start()
+
+
+def stop_timelapse():
+    with timelapse_lock:
+        timelapse_stop.set()
+
+
+def list_timelapse(offset=0, limit=40):
+    ensure_timelapse_dir()
+    files = [f for f in os.listdir(TIMELAPSE_DIR) if f.lower().endswith(".jpg")]
+    files.sort(reverse=True)
+    return files[offset: offset + limit]
+
+
+def clear_timelapse():
+    ensure_timelapse_dir()
+    for f in os.listdir(TIMELAPSE_DIR):
+        if f.lower().endswith(".jpg") or f.lower().endswith(".gif"):
+            try:
+                os.remove(os.path.join(TIMELAPSE_DIR, f))
+            except Exception:
+                pass
+
+
+def create_timelapse_gif(frame_interval_sec: float = 1.0):
+    try:
+        from PIL import Image
+    except Exception:
+        return None
+    ensure_timelapse_dir()
+    files = [f for f in os.listdir(TIMELAPSE_DIR) if f.lower().endswith(".jpg")]
+    files.sort()
+    if not files:
+        return None
+    frames = []
+    for f in files:
+        try:
+            img = Image.open(os.path.join(TIMELAPSE_DIR, f)).convert("RGB")
+            frames.append(img)
+        except Exception:
+            continue
+    if not frames:
+        return None
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    out = os.path.join(TIMELAPSE_DIR, f"timelapse_{ts}.gif")
+    duration_ms = max(1, int(frame_interval_sec * 1000))
+    frames[0].save(
+        out,
+        save_all=True,
+        append_images=frames[1:],
+        duration=duration_ms,
+        loop=0,
+        optimize=True,
+    )
+    return os.path.basename(out)
 
 
 def get_metric_name(metric_id):
@@ -179,6 +292,62 @@ def api_camera():
     }
 
 
+@app.get("/api/camera/status")
+def api_camera_status():
+    latest = os.path.join(HLS_DIR, "latest.jpg")
+    playlist = os.path.join(HLS_DIR, "stream.m3u8")
+    now = time.time()
+    last = 0.0
+    for path in (latest, playlist):
+        try:
+            m = os.path.getmtime(path)
+            if m > last:
+                last = m
+        except Exception:
+            pass
+    online = (now - last) <= CAMERA_STALE_SEC if last > 0 else False
+    return {"online": online, "last_ts": last}
+
+
+@app.get("/api/timelapse/status")
+def api_timelapse_status():
+    return {
+        "running": timelapse_running(),
+        "interval_sec": timelapse_interval,
+    }
+
+
+@app.post("/api/timelapse/start")
+def api_timelapse_start(interval_sec: int = Query(60)):
+    start_timelapse(interval_sec)
+    return {"ok": True, "running": timelapse_running(), "interval_sec": timelapse_interval}
+
+
+@app.post("/api/timelapse/stop")
+def api_timelapse_stop():
+    stop_timelapse()
+    return {"ok": True, "running": timelapse_running()}
+
+
+@app.get("/api/timelapse/list")
+def api_timelapse_list(offset: int = 0, limit: int = 40):
+    return {"items": list_timelapse(offset, limit)}
+
+
+@app.post("/api/timelapse/clear")
+def api_timelapse_clear():
+    clear_timelapse()
+    return {"ok": True}
+
+
+@app.post("/api/timelapse/gif")
+def api_timelapse_gif(interval_sec: float = Query(1.0)):
+    name = create_timelapse_gif(interval_sec)
+    if not name:
+        return {"ok": False}
+    return {"ok": True, "filename": name}
+
+
 @app.get("/")
 def index():
     rtsp = build_rtsp_url() or ""
@@ -260,6 +429,16 @@ def index():
       cursor: pointer;
     }}
     .gps-thumb {{ width: 100%; height: 160px; border: 1px solid rgba(22,50,74,0.15); border-radius: 10px; margin-top: 6px; }}
+    .timelapse-controls {{ display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }}
+    .timelapse-controls input {{ width: 80px; padding: 4px 6px; border-radius: 6px; border: 1px solid rgba(22,50,74,0.2); }}
+    .timelapse-controls button {{ border: 1px solid rgba(61, 142, 207, 0.4); background: rgba(255,255,255,0.7); color: var(--ink); padding: 6px 10px; border-radius: 999px; cursor: pointer; }}
+    .timelapse-gallery {{ display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 10px; max-height: 420px; overflow: auto; padding: 8px; background: rgba(255,255,255,0.6); border-radius: 12px; border: 1px solid rgba(22,50,74,0.15); }}
+    .timelapse-gallery img {{ width: 100%; height: auto; border-radius: 8px; border: 1px solid rgba(22,50,74,0.15); }}
+    .timelapse-actions {{ display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }}
+    .status-line {{ display: flex; align-items: center; gap: 8px; margin: 6px 0 12px; font-size: 0.95em; }}
+    .dot {{ display: inline-block; width: 10px; height: 10px; border-radius: 50%; }}
+    .dot.online {{ background: #2ecc71; box-shadow: 0 0 6px rgba(46, 204, 113, 0.6); }}
+    .dot.offline {{ background: #e74c3c; box-shadow: 0 0 6px rgba(231, 76, 60, 0.4); }}
     @media (max-width: 720px) {{
       .gps-box {{ grid-template-columns: 1fr; }}
     }}
@@ -269,12 +448,12 @@ def index():
   <h1>AULA MOVIL - ROTOR STUDIO</h1>
   <div class=\"tabs\">
     <div class=\"tab active\" data-tab=\"dashboard\">Dashboard</div>
-    <div class=\"tab\" data-tab=\"wind\">Wind</div>
-    <div class=\"tab\" data-tab=\"rain\">Pluviometro</div>
-    <div class=\"tab\" data-tab=\"bme\">Temp/Humedad/Presion</div>
-    <div class=\"tab\" data-tab=\"air\">PM & Aire</div>
-    <div class=\"tab\" data-tab=\"gps\">Posicion</div>
-    <div class=\"tab\" data-tab=\"camera\">Camera</div>
+    <div class=\"tab\" data-tab=\"wind\">Viento</div>
+    <div class=\"tab\" data-tab=\"rain\">Pluviómetro</div>
+    <div class=\"tab\" data-tab=\"bme\">Temp/Humedad/Presión</div>
+    <div class=\"tab\" data-tab=\"air\">PM y Aire</div>
+    <div class=\"tab\" data-tab=\"gps\">Posición</div>
+    <div class=\"tab\" data-tab=\"camera\">Cámara</div>
   </div>
 
   <div id=\"dashboard\" class=\"panel active\">
@@ -289,7 +468,8 @@ def index():
   </div>
 
   <div id=\"wind\" class=\"panel\">
-    <h2>Wind (ESP8266)</h2>
+    <h2>Viento (ESP8266)</h2>
+    <div class=\"status-line\">Estado: <span id=\"windStatus\" class=\"dot offline\"></span><span id=\"windStatusText\">Offline</span></div>
     <table>
       <thead><tr><th>Metric</th><th>Value</th><th>Updated</th></tr></thead>
       <tbody id=\"windBody\"></tbody>
@@ -299,33 +479,39 @@ def index():
   </div>
 
   <div id=\"rain\" class=\"panel\">
-    <h2>Pluviometro</h2>
+    <h2>Pluviómetro</h2>
+    <div class=\"status-line\">Estado: <span id=\"rainStatus\" class=\"dot offline\"></span><span id=\"rainStatusText\">Offline</span></div>
     <table>
-      <thead><tr><th>Metrica</th><th>Valor</th><th>Actualizado</th></tr></thead>
+      <thead><tr><th>Métrica</th><th>Valor</th><th>Actualizado</th></tr></thead>
       <tbody id=\"rainBody\"></tbody>
     </table>
+    <h3>Acumulado (24h)</h3>
+    <canvas id=\"rainChart\" width=\"700\" height=\"220\"></canvas>
   </div>
 
   <div id=\"bme\" class=\"panel\">
-    <h2>Temperatura / Humedad / Presion</h2>
+    <h2>Temperatura / Humedad / Presión</h2>
+    <div class=\"status-line\">Estado: <span id=\"bmeStatus\" class=\"dot offline\"></span><span id=\"bmeStatusText\">Offline</span></div>
     <table>
-      <thead><tr><th>Metrica</th><th>Valor</th><th>Actualizado</th></tr></thead>
+      <thead><tr><th>Métrica</th><th>Valor</th><th>Actualizado</th></tr></thead>
       <tbody id=\"bmeBody\"></tbody>
     </table>
   </div>
 
   <div id=\"air\" class=\"panel\">
     <h2>PM10 / PM2.5 y Calidad del Aire</h2>
+    <div class=\"status-line\">Estado: <span id=\"airStatus\" class=\"dot offline\"></span><span id=\"airStatusText\">Offline</span></div>
     <table>
-      <thead><tr><th>Metrica</th><th>Valor</th><th>Actualizado</th></tr></thead>
+      <thead><tr><th>Métrica</th><th>Valor</th><th>Actualizado</th></tr></thead>
       <tbody id=\"airBody\"></tbody>
     </table>
   </div>
 
   <div id=\"gps\" class=\"panel\">
-    <h2>Posicion (GPS)</h2>
+    <h2>Posición (GPS)</h2>
+    <div class=\"status-line\">Estado: <span id=\"gpsStatus\" class=\"dot offline\"></span><span id=\"gpsStatusText\">Offline</span></div>
     <table>
-      <thead><tr><th>Metrica</th><th>Valor</th><th>Actualizado</th></tr></thead>
+      <thead><tr><th>Métrica</th><th>Valor</th><th>Actualizado</th></tr></thead>
       <tbody id=\"gpsBody\"></tbody>
     </table>
     <div class=\"gps-box\">
@@ -338,13 +524,45 @@ def index():
     </div>
   </div>
   <div id=\"camera\" class=\"panel\">
-    <h2>Camera (Live)</h2>
+    <h2>Cámara (Live)</h2>
+    <div class=\"status-line\">Estado: <span id=\"cameraStatus\" class=\"dot offline\"></span><span id=\"cameraStatusText\">Offline</span></div>
     <video id=\"video\" controls autoplay muted playsinline></video>
     <p>RTSP URL:</p>
     <div class=\"mono\">{rtsp}</div>
     <p>
       If video does not start, use VLC with the RTSP URL above.
     </p>
+
+    <h3>Timelapse</h3>
+    <div class=\"card\">
+      <div class=\"timelapse-controls\">
+        <label>Intervalo (seg): <input id=\"timelapseInterval\" type=\"number\" min=\"1\" value=\"60\" /></label>
+        <button onclick=\"startTimelapse()\">Iniciar</button>
+        <button onclick=\"stopTimelapse()\">Parar</button>
+        <span id=\"timelapseStatus\">Estado: --</span>
+      </div>
+    </div>
+
+    <h3>Galería</h3>
+    <div id=\"timelapseGallery\" class=\"timelapse-gallery\"></div>
+
+    <h3>Crear GIF</h3>
+    <div class=\"card\">
+      <div class=\"timelapse-actions\" style=\"margin-top:8px;\">
+        <label>Intervalo (seg): <input id=\"gifInterval\" type=\"number\" min=\"1\" value=\"1\" /></label>
+        <button onclick=\"createGif()\">Crear GIF</button>
+        <a id=\"gifLink\" class=\"mono\" target=\"_blank\" rel=\"noopener\"></a>
+      </div>
+      <div id=\"gifStatus\" style=\"margin-top:8px; opacity:0.8;\"></div>
+      <img id=\"gifPreview\" style=\"width:100%; max-width:520px; margin-top:8px; border-radius:10px; border:1px solid rgba(22,50,74,0.15);\" />
+    </div>
+
+    <h3>Gestión de galería</h3>
+    <div class=\"card\">
+      <div class=\"timelapse-actions\" style=\"margin-top:8px;\">
+        <button onclick=\"clearTimelapse()\">Borrar galería</button>
+      </div>
+    </div>
   </div>
 
   <script src=\"/static/hls.min.js\"></script>
@@ -356,6 +574,7 @@ def index():
     const WIND_MAX_POINTS = 120;
 
     const WIND_METRIC_PREFIX = 'wind_';
+    const ONLINE_MAX_AGE_SEC = 120;
 
     const DEFAULT_GPS = {{ lat: 43.5550, lon: -5.9240, label: 'Aviles (ejemplo)' }};
     const DASH_CAM_CHECK_MS = 15000;
@@ -395,7 +614,7 @@ def index():
       const deg = (dir === undefined || isNaN(dir)) ? 0 : Number(dir);
       const tsText = ts ? new Date(ts*1000).toLocaleString() : '';
       card.innerHTML = `
-        <strong>Viento</strong>
+        <strong>${{dotHtml(ts)}} Viento</strong>
         <div>Velocidad: ${{speedStr}} ${{unitSpeed}}</div>
         <div>Dirección: ${{dirStr}}° (${{cardinal}})</div>
         <div class="row">
@@ -420,6 +639,15 @@ def index():
       return METRIC_NAMES[id] || id;
     }}
 
+    function isOnlineTs(ts) {{
+      if (!ts) return false;
+      return (Date.now()/1000 - ts) <= ONLINE_MAX_AGE_SEC;
+    }}
+
+    function dotHtml(ts) {{
+      return `<span class="dot ${{isOnlineTs(ts) ? 'online' : 'offline'}}"></span>`;
+    }}
+
     function metricUnit(id, fallback) {{
       return METRIC_UNITS[id] || fallback || '';
     }}
@@ -431,6 +659,23 @@ def index():
 
     function max_ts(...items) {{
       return Math.max(...items.map(i => i ? i.ts : 0));
+    }}
+
+    function latestTsByDevice(data, deviceId) {{
+      const items = Object.values(data).filter(v => v.device_id === deviceId);
+      if (!items.length) return 0;
+      return Math.max(...items.map(i => i.ts || 0));
+    }}
+
+    function setStatus(id, ts) {{
+      const dot = document.getElementById(id);
+      const text = document.getElementById(id + 'Text');
+      const online = isOnlineTs(ts);
+      if (dot) {{
+        dot.classList.toggle('online', online);
+        dot.classList.toggle('offline', !online);
+      }}
+      if (text) text.textContent = online ? 'Online' : 'Offline';
     }}
 
     function buildSummaryCard(title, rows, ts) {{
@@ -446,7 +691,7 @@ def index():
       if (!el) return;
       const timeText = ts ? new Date(ts*1000).toLocaleString() : '';
       const rowsHtml = rows.map(r => `<div>${{r[0]}}: ${{r[1]}}</div>`).join('');
-      el.innerHTML = `<strong>${{title}}</strong>${{rowsHtml}}<div><small>${{timeText}}</small></div>`;
+      el.innerHTML = `<strong>${{dotHtml(ts)}} ${{title}}</strong>${{rowsHtml}}<div><small>${{timeText}}</small></div>`;
     }}
 
     function updateCameraThumb() {{
@@ -459,16 +704,42 @@ def index():
       const now = Date.now();
       if (now - lastCamCheck < DASH_CAM_CHECK_MS) return;
       lastCamCheck = now;
-      fetch('/hls/stream.m3u8', {{ method: 'GET', cache: 'no-store' }})
-        .then(r => {{
-          lastCamStatus = r.ok ? 'Online' : 'Offline';
+      fetch('/api/camera/status', {{ method: 'GET', cache: 'no-store' }})
+        .then(r => r.json())
+        .then(data => {{
+          const online = !!data.online;
+          lastCamStatus = online ? 'Online' : 'Offline';
           const el = document.getElementById('camStatus');
           if (el) el.textContent = lastCamStatus;
+          const dot = document.getElementById('cameraStatus');
+          const text = document.getElementById('cameraStatusText');
+          const dashDot = document.getElementById('dashCamDot');
+          if (dot) {{
+            dot.classList.toggle('online', online);
+            dot.classList.toggle('offline', !online);
+          }}
+          if (dashDot) {{
+            dashDot.classList.toggle('online', online);
+            dashDot.classList.toggle('offline', !online);
+          }}
+          if (text) text.textContent = online ? 'Online' : 'Offline';
         }})
         .catch(() => {{
           lastCamStatus = 'Offline';
           const el = document.getElementById('camStatus');
           if (el) el.textContent = lastCamStatus;
+          const dot = document.getElementById('cameraStatus');
+          const text = document.getElementById('cameraStatusText');
+          const dashDot = document.getElementById('dashCamDot');
+          if (dot) {{
+            dot.classList.toggle('online', false);
+            dot.classList.toggle('offline', true);
+          }}
+          if (dashDot) {{
+            dashDot.classList.toggle('online', false);
+            dashDot.classList.toggle('offline', true);
+          }}
+          if (text) text.textContent = 'Offline';
         }});
     }}
 
@@ -490,7 +761,7 @@ def index():
       const el = document.getElementById('dashWind');
       if (!el) return;
       el.innerHTML = `
-        <strong>Viento</strong>
+        <strong>${{dotHtml(ts)}} Viento</strong>
         <div>Velocidad: ${{speedStr}} ${{unitSpeed}}</div>
         <div>Dirección: ${{dirStr}}° (${{cardinal}})</div>
         <div class="row">
@@ -511,7 +782,7 @@ def index():
       const latv = lat ? Number(lat.value) : DEFAULT_GPS.lat;
       const lonv = lon ? Number(lon.value) : DEFAULT_GPS.lon;
       const altv = alt ? Number(alt.value) : null;
-      const label = lat && lon ? 'Posicion (GPS)' : DEFAULT_GPS.label;
+      const label = lat && lon ? 'Posición (GPS)' : DEFAULT_GPS.label;
 
       const card = document.createElement('div');
       card.className = 'card';
@@ -537,7 +808,7 @@ def index():
       const latv = lat ? Number(lat.value) : DEFAULT_GPS.lat;
       const lonv = lon ? Number(lon.value) : DEFAULT_GPS.lon;
       const altv = alt ? Number(alt.value) : null;
-      const label = lat && lon ? 'Posicion GPS' : DEFAULT_GPS.label;
+      const label = lat && lon ? 'Posición GPS' : DEFAULT_GPS.label;
       const mapSrc = buildGpsMapSrc(latv, lonv);
       const text = altv !== null
         ? `${{label}} - Lat ${{latv.toFixed(6)}}, Lon ${{lonv.toFixed(6)}}, Alt ${{altv.toFixed(1)}} m`
@@ -579,15 +850,16 @@ def index():
       const latv = lat ? Number(lat.value) : DEFAULT_GPS.lat;
       const lonv = lon ? Number(lon.value) : DEFAULT_GPS.lon;
       const altv = alt ? Number(alt.value) : null;
-      const label = lat && lon ? 'Posicion (GPS)' : DEFAULT_GPS.label;
+      const label = 'Localización';
       const mapSrc = buildGpsMapSrc(latv, lonv);
       const line1 = `Lat: ${{latv.toFixed(6)}}  Lon: ${{lonv.toFixed(6)}}`;
       const line2 = altv !== null ? `Alt: ${{altv.toFixed(1)}} m` : '';
+      const ts = max_ts(lat, lon, alt);
 
       const el = document.getElementById('dashGps');
       if (!el) return;
       if (!el.dataset.ready) {{
-        el.innerHTML = `<strong>${{label}}</strong><div id="dashGpsLine1"></div><div id="dashGpsLine2"></div><iframe id="gpsDashMap" class="gps-thumb" loading="lazy"></iframe>`;
+        el.innerHTML = `<strong>${{dotHtml(ts)}} ${{label}}</strong><div id="dashGpsLine1"></div><div id="dashGpsLine2"></div><iframe id="gpsDashMap" class="gps-thumb" loading="lazy"></iframe>`;
         el.dataset.ready = '1';
       }}
       const l1 = document.getElementById('dashGpsLine1');
@@ -600,26 +872,51 @@ def index():
         lastGpsDashMapSrc = mapSrc;
       }}
       const titleEl = el.querySelector('strong');
-      if (titleEl) titleEl.textContent = label;
+      if (titleEl) titleEl.innerHTML = `${{dotHtml(ts)}} ${{label}}`;
     }}
 
     function renderDashCam() {{
       const el = document.getElementById('dashCam');
       if (!el) return;
       if (!el.dataset.ready) {{
-        el.innerHTML = `<strong>Camara</strong><div>Estado: <span id="camStatus">${{lastCamStatus}}</span></div><img id="camThumb" class="cam-thumb" src="/hls/latest.jpg" /><div><small>Ver pestana Camera</small></div>`;
+        el.innerHTML = `<strong><span id="dashCamDot" class="dot offline"></span> Cámara</strong><div>Estado: <span id="camStatus">${{lastCamStatus}}</span></div><img id="camThumb" class="cam-thumb" src="/hls/latest.jpg" /><div><small>Ver pestaña Cámara</small></div>`;
         el.dataset.ready = '1';
       }}
       updateCameraStatus();
     }}
 
+    function renderSimpleTable(bodyId, metricIds, data) {{
+      const body = document.getElementById(bodyId);
+      if (!body) return;
+      body.innerHTML = '';
+      let rows = 0;
+      metricIds.forEach(id => {{
+        const m = getMetric(data, id);
+        if (!m) return;
+        const label = metricLabel(id);
+        const unit = metricUnit(id, m.unit);
+        let value = m.value;
+        if (id === 'wind_direction_cardinal') {{
+          const deg = getMetric(data, 'wind_direction_deg');
+          value = windCardinal(deg ? Number(deg.value) : NaN);
+        }}
+        const tr = document.createElement('tr');
+        tr.innerHTML = `<td>${{dotHtml(m.ts)}} ${{label}}</td><td>${{value}} ${{unit}}</td><td>${{new Date(m.ts*1000).toLocaleString()}}</td>`;
+        body.appendChild(tr);
+        rows += 1;
+      }});
+      if (rows === 0) {{
+        const tr = document.createElement('tr');
+        tr.innerHTML = `<td colspan="3" style="opacity:0.6;">Sin datos</td>`;
+        body.appendChild(tr);
+      }}
+    }}
+
     function buildCameraCard() {{
       const card = document.createElement('div');
       card.className = 'card';
-      card.innerHTML = `<strong>Camara</strong><div>Estado: <span id="camStatus">Comprobando...</span></div><img id="camThumb" class="cam-thumb" src="/hls/latest.jpg" /><div><small>Ver pestana Camera</small></div>`;
-      fetch('/hls/stream.m3u8', {{ method: 'GET', cache: 'no-store' }})
-        .then(r => {{ document.getElementById('camStatus').textContent = r.ok ? 'Online' : 'Offline'; }})
-        .catch(() => {{ document.getElementById('camStatus').textContent = 'Offline'; }});
+      card.innerHTML = `<strong>Cámara</strong><div>Estado: <span id="camStatus">Comprobando...</span></div><img id="camThumb" class="cam-thumb" src="/hls/latest.jpg" /><div><small>Ver pestaña Cámara</small></div>`;
+      updateCameraStatus();
       return card;
     }}
 
@@ -628,20 +925,24 @@ def index():
       const res = await fetch('/api/latest');
       const data = await res.json();
       renderDashWind(data);
-      const rain = getMetric(data, 'rain_mm');
-      setCard(document.getElementById('dashRain'), 'Pluviometro', [
-        ['Lluvia acumulada', rain ? `${{rain.value}} ${{metricUnit('rain_mm', rain.unit)}}` : '--']
-      ], rain ? rain.ts : 0);
+      const rainTotal = getMetric(data, 'rain_mm_total') || getMetric(data, 'rain_mm');
+      const rainRate = getMetric(data, 'rain_rate_mmh');
+      const rainInterval = getMetric(data, 'rain_mm_interval');
+      setCard(document.getElementById('dashRain'), 'Pluviómetro', [
+        ['Lluvia acumulada', rainTotal ? `${{rainTotal.value}} ${{metricUnit(rainTotal.metric_id, rainTotal.unit)}}` : '--'],
+        ['Intensidad', rainRate ? `${{rainRate.value}} ${{metricUnit('rain_rate_mmh', rainRate.unit)}}` : '--'],
+        ['Intervalo', rainInterval ? `${{rainInterval.value}} ${{metricUnit('rain_mm_interval', rainInterval.unit)}}` : '--']
+      ], max_ts(rainTotal, rainRate, rainInterval));
 
       const t = getMetric(data, 'temp_c');
       const rh = getMetric(data, 'rh_pct');
       const p = getMetric(data, 'pressure_hpa');
       const t2 = getMetric(data, 'temp_ground_c');
       const rh2 = getMetric(data, 'rh_ground_pct');
-      setCard(document.getElementById('dashBme'), 'Temp / Humedad / Presion', [
+      setCard(document.getElementById('dashBme'), 'Temp / Humedad / Presión', [
         ['Temperatura', t ? `${{t.value}} ${{metricUnit('temp_c', t.unit)}}` : '--'],
         ['Humedad', rh ? `${{rh.value}} ${{metricUnit('rh_pct', rh.unit)}}` : '--'],
-        ['Presion', p ? `${{p.value}} ${{metricUnit('pressure_hpa', p.unit)}}` : '--'],
+        ['Presión', p ? `${{p.value}} ${{metricUnit('pressure_hpa', p.unit)}}` : '--'],
         ['Temp suelo (sombra)', t2 ? `${{t2.value}} ${{metricUnit('temp_ground_c', t2.unit)}}` : '--'],
         ['Humedad suelo (sombra)', rh2 ? `${{rh2.value}} ${{metricUnit('rh_ground_pct', rh2.unit)}}` : '--']
       ], max_ts(t, rh, p, t2, rh2));
@@ -656,12 +957,20 @@ def index():
       renderDashGps(data);
       renderDashCam();
 
+      const bmeTs = Math.max(latestTsByDevice(data, 'bme280_local'), latestTsByDevice(data, 'bme280_ground'));
+      setStatus('windStatus', latestTsByDevice(data, 'wind_esp8266'));
+      setStatus('rainStatus', latestTsByDevice(data, 'rain_node_mcu'));
+      setStatus('bmeStatus', bmeTs);
+      setStatus('airStatus', latestTsByDevice(data, 'pm_sensor_1'));
+      setStatus('gpsStatus', latestTsByDevice(data, 'gps_usb_1'));
+
       renderWind(data);
-      renderSimpleTable('rainBody', ['rain_mm'], data);
+      renderSimpleTable('rainBody', ['rain_tips_total','rain_mm_total','rain_mm_interval','rain_rate_mmh','rain_last_tip_ms','rain_since_last_tip_ms','rain_mm'], data);
       renderSimpleTable('bmeBody', ['temp_c','rh_pct','pressure_hpa','temp_ground_c','rh_ground_pct'], data);
       renderSimpleTable('airBody', ['pm10_ugm3','pm2_5_ugm3'], data);
       renderSimpleTable('gpsBody', ['gps_lat','gps_lon','gps_alt'], data);
       renderGPS(data);
+      loadRain24h();
     }}
 
     function renderWind(data) {{
@@ -715,6 +1024,37 @@ def index():
       ctx.stroke();
     }}
 
+    async function loadRain24h() {{
+      const res = await fetch('/api/history?metric=rain_mm_total');
+      const data = await res.json();
+      drawRainChart(data);
+    }}
+
+    function drawRainChart(points) {{
+      const canvas = document.getElementById('rainChart');
+      if (!canvas) return;
+      const ctx = canvas.getContext('2d');
+      ctx.clearRect(0,0,canvas.width,canvas.height);
+      if (!points || points.length === 0) return;
+      const now = Date.now()/1000;
+      const day = points.filter(p => p.ts >= (now - 24*3600));
+      if (day.length === 0) return;
+      const xs = day.map(p => p.ts);
+      const ys = day.map(p => p.value);
+      const minX = Math.min(...xs), maxX = Math.max(...xs);
+      const minY = Math.min(...ys), maxY = Math.max(...ys);
+      const pad = 10;
+      ctx.beginPath();
+      day.forEach((p, i) => {{
+        const x = pad + (p.ts - minX) / (maxX - minX || 1) * (canvas.width - pad*2);
+        const y = canvas.height - pad - (p.value - minY) / (maxY - minY || 1) * (canvas.height - pad*2);
+        if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+      }});
+      ctx.strokeStyle = '#2a6';
+      ctx.lineWidth = 2;
+      ctx.stroke();
+    }}
+
     async function loadHistory() {{
       const metric = document.getElementById('metric').value.trim();
       if (!metric) return;
@@ -756,12 +1096,104 @@ def index():
       }}
     }}
 
+    let timelapseOffset = 0;
+    const TIMELAPSE_LIMIT = 30;
+    let timelapseLoading = false;
+
+    async function loadTimelapseStatus() {{
+      const res = await fetch('/api/timelapse/status');
+      const data = await res.json();
+      const status = document.getElementById('timelapseStatus');
+      if (status) status.textContent = `Estado: ${{data.running ? 'En marcha' : 'Parado'}}`;
+      const input = document.getElementById('timelapseInterval');
+      if (input && data.interval_sec) input.value = data.interval_sec;
+    }}
+
+    async function startTimelapse() {{
+      const input = document.getElementById('timelapseInterval');
+      const val = input ? input.value : 60;
+      await fetch(`/api/timelapse/start?interval_sec=${{encodeURIComponent(val)}}`, {{ method: 'POST' }});
+      loadTimelapseStatus();
+    }}
+
+    async function stopTimelapse() {{
+      await fetch('/api/timelapse/stop', {{ method: 'POST' }});
+      loadTimelapseStatus();
+    }}
+
+    async function loadMoreTimelapse() {{
+      if (timelapseLoading) return;
+      timelapseLoading = true;
+      const res = await fetch(`/api/timelapse/list?offset=${{timelapseOffset}}&limit=${{TIMELAPSE_LIMIT}}`);
+      const data = await res.json();
+      const gallery = document.getElementById('timelapseGallery');
+      if (gallery && data.items) {{
+        data.items.forEach(f => {{
+          const img = document.createElement('img');
+          img.loading = 'lazy';
+          img.src = `/timelapse/${{f}}`;
+          gallery.appendChild(img);
+        }});
+        timelapseOffset += data.items.length;
+      }}
+      timelapseLoading = false;
+    }}
+
+    async function createGif() {{
+      const status = document.getElementById('gifStatus');
+      if (status) status.textContent = 'Generando GIF...';
+      const input = document.getElementById('gifInterval');
+      const val = input ? input.value : 1;
+      const res = await fetch(`/api/timelapse/gif?interval_sec=${{encodeURIComponent(val)}}`, {{ method: 'POST' }});
+      const data = await res.json();
+      if (data.ok && data.filename) {{
+        const link = document.getElementById('gifLink');
+        if (link) {{
+          link.href = `/timelapse/${{data.filename}}`;
+          link.textContent = data.filename;
+        }}
+        const img = document.getElementById('gifPreview');
+        if (img) img.src = `/timelapse/${{data.filename}}?ts=${{Date.now()}}`;
+        if (status) status.textContent = 'GIF creado';
+      }} else {{
+        if (status) status.textContent = 'No hay imagenes para el GIF';
+      }}
+    }}
+
+    async function clearTimelapse() {{
+      if (!confirm('¿Seguro que quieres borrar toda la galería?')) return;
+      const status = document.getElementById('gifStatus');
+      if (status) status.textContent = 'Borrando...';
+      await fetch('/api/timelapse/clear', {{ method: 'POST' }});
+      const gallery = document.getElementById('timelapseGallery');
+      if (gallery) gallery.innerHTML = '';
+      timelapseOffset = 0;
+      if (status) status.textContent = 'Galería vacía';
+      const link = document.getElementById('gifLink');
+      if (link) link.textContent = '';
+      const img = document.getElementById('gifPreview');
+      if (img) img.removeAttribute('src');
+    }}
+
+    function setupTimelapseScroll() {{
+      const gallery = document.getElementById('timelapseGallery');
+      if (!gallery) return;
+      gallery.addEventListener('scroll', () => {{
+        if (gallery.scrollTop + gallery.clientHeight >= gallery.scrollHeight - 50) {{
+          loadMoreTimelapse();
+        }}
+      }});
+    }}
+
     const evt = new EventSource('/api/stream');
     evt.onmessage = () => loadLatest();
     renderGPS({{}});
     renderDashGps({{}});
     loadLatest();
     startVideo();
+    loadTimelapseStatus();
+    setupTimelapseScroll();
+    loadMoreTimelapse();
   </script>
 </body>
 </html>

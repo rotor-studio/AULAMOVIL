@@ -100,6 +100,7 @@ class Collector:
         if rc == 0:
             client.subscribe(f"{self.topic_prefix}/#")
             client.subscribe("meteo/wind/#")
+            client.subscribe("meteo/rain/#")
             print(f"[collector] subscribed to {self.topic_prefix}/# and meteo/wind/#")
         else:
             print(f"[collector] mqtt connect failed rc={rc}")
@@ -214,6 +215,51 @@ class Collector:
             raw_json = json.dumps({"direction_cardinal": str(payload)}, separators=(",", ":"))
             self.store(ts, device_id, "wind_direction_cardinal", 0.0, None, raw_json)
 
+    def handle_rain_payload(self, topic, payload):
+        parts = topic.split("/")
+        if len(parts) < 3:
+            return
+        device_id = "rain_node_mcu"
+
+        if parts[2] == "json" and isinstance(payload, dict):
+            ts = parse_timestamp(payload.get("ts"))
+            mapping = {
+                "tips_total": ("rain_tips_total", "count"),
+                "mm_total": ("rain_mm_total", "mm"),
+                "mm_interval": ("rain_mm_interval", "mm"),
+                "rate_mmh": ("rain_rate_mmh", "mm/h"),
+                "last_tip_ms": ("rain_last_tip_ms", "ms"),
+                "since_last_tip_ms": ("rain_since_last_tip_ms", "ms"),
+            }
+            for k, (metric_id, unit) in mapping.items():
+                if k in payload:
+                    try:
+                        value = float(payload[k])
+                    except Exception:
+                        continue
+                    raw_json = json.dumps(payload, separators=(",", ":"))
+                    self.store(ts, device_id, metric_id, value, unit, raw_json)
+            return
+
+        metric_key = parts[2]
+        metric_map = {
+            "tips_total": "rain_tips_total",
+            "mm_total": "rain_mm_total",
+            "mm_interval": "rain_mm_interval",
+            "rate_mmh": "rain_rate_mmh",
+            "last_tip_ms": "rain_last_tip_ms",
+            "since_last_tip_ms": "rain_since_last_tip_ms",
+        }
+        metric_id = metric_map.get(metric_key)
+        if metric_id:
+            try:
+                value = float(payload)
+            except Exception:
+                return
+            ts = time.time()
+            self.store(ts, device_id, metric_id, value, None, json.dumps({"value": value}))
+            return
+
     def on_message(self, client, userdata, msg):
         try:
             topic = msg.topic
@@ -228,6 +274,8 @@ class Collector:
                 self.handle_rotor_payload(topic, payload)
             elif topic.startswith("meteo/wind/"):
                 self.handle_wind_payload(topic, payload)
+            elif topic.startswith("meteo/rain/"):
+                self.handle_rain_payload(topic, payload)
         except Exception as exc:
             print(f"[collector] error: {exc}")
 
