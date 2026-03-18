@@ -22,6 +22,10 @@ devices:
     name: PM Sensor 1
     location: outdoors
     metrics: [pm10_ugm3, pm2_5_ugm3]
+  sensor_community_1:
+    name: Sensor.Community 8283515
+    location: outdoors
+    metrics: [pm10_ugm3, pm2_5_ugm3, temp_c, rh_pct, pressure_hpa]
   gps_usb_1:
     name: GPS USB
     location: enclosure
@@ -41,6 +45,7 @@ devices:
       - wind_direction_raw
       - wind_direction_ma
       - wind_direction_cardinal
+      - light_lux
       - wind_raw
       - wind_voltage_v
       - wind_current_ma
@@ -130,3 +135,6 @@ metrics:
   wind_direction_cardinal:
     name: Wind Direction (Cardinal)
     unit: text
+  light_lux:
+    name: Luminosidad
+    unit: lux

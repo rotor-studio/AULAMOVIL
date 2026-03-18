@@ -14,7 +14,7 @@
 
 ## Services
 - mosquitto running locally.
-- otor-collector, otor-web, and otor-camera enabled and running.
+- rotor-collector, rotor-web, and rotor-camera enabled and running.
 - isc-dhcp-server provides camera DHCP on eth0.
 
 ## Repo Location
@@ -22,7 +22,14 @@
 
 ## Access
 - Web UI: http://<pi-ip>:8000/
-- MQTT topic prefix: otor/meteo
+- Sign endpoint: http://<pi-ip>:8000/api/sign/latest
+- MQTT topic prefix: rotor/meteo
+
+## ESP8266 Sign
+- Sketch folder in repo: /opt/rotor-meteo/esp8266/cartel_pronostico
+- Current sign sketch targets an ESP8266 + NeoPixel matrix.
+- Current matrix assumptions: 38x8 and zigzag wiring.
+- Current sign endpoint payload includes forecast summary, icon, air quality band, RGB color, and display lines.
 
 ## SSH
 - Primary SSH access over wlan0 on the ROTORLINK network.

@@ -4,6 +4,8 @@ import sqlite3
 import threading
 import time
 from datetime import datetime, timezone
+from urllib.request import urlopen
+from urllib.error import URLError, HTTPError
 
 import yaml
 import paho.mqtt.client as mqtt
@@ -96,11 +98,16 @@ class Collector:
         self.gps_cfg = self.config.get("gps", {})
         self.gps_thread = None
 
+        self.sc_cfg = self.config.get("sensor_community", {})
+        self.sc_thread = None
+
     def on_connect(self, client, userdata, flags, rc, properties=None):
         if rc == 0:
             client.subscribe(f"{self.topic_prefix}/#")
             client.subscribe("meteo/wind/#")
             client.subscribe("meteo/rain/#")
+            client.subscribe("meteo/env/#")
+            client.subscribe("meteo/light/#")
             print(f"[collector] subscribed to {self.topic_prefix}/# and meteo/wind/#")
         else:
             print(f"[collector] mqtt connect failed rc={rc}")
@@ -172,18 +179,26 @@ class Collector:
                 "voltage_v": ("wind_voltage_v", "V"),
                 "current_ma": ("wind_current_ma", "mA"),
                 "speed_ms": ("wind_speed_ms", "m/s"),
+                "speed_raw": ("wind_speed_raw", None),
+                "speed_ma": ("wind_speed_ma", "mA"),
                 "direction_deg": ("wind_direction_deg", "deg"),
+                "dir_deg": ("wind_direction_deg", "deg"),
                 "direction_raw": ("wind_direction_raw", None),
+                "dir_raw": ("wind_direction_raw", None),
                 "direction_ma": ("wind_direction_ma", "mA"),
+                "lux": ("light_lux", "lux"),
             }
+            raw_json = json.dumps(payload, separators=(",", ":"))
             for k, (metric_id, unit) in mapping.items():
                 if k in payload:
                     try:
                         value = float(payload[k])
                     except Exception:
                         continue
-                    raw_json = json.dumps(payload, separators=(",", ":"))
                     self.store(ts, device_id, metric_id, value, unit, raw_json)
+            dir_card = payload.get("direction_cardinal", payload.get("dir_card"))
+            if dir_card is not None:
+                self.store(ts, device_id, "wind_direction_cardinal", 0.0, None, json.dumps({"direction_cardinal": str(dir_card)}, separators=(",", ":")))
             return
 
         metric_key = parts[2]
@@ -196,8 +211,11 @@ class Collector:
             "speed_raw": "wind_speed_raw",
             "speed_ma": "wind_speed_ma",
             "direction_deg": "wind_direction_deg",
+            "dir_deg": "wind_direction_deg",
             "direction_raw": "wind_direction_raw",
+            "dir_raw": "wind_direction_raw",
             "direction_ma": "wind_direction_ma",
+            "lux": "light_lux",
         }
         metric_id = metric_map.get(metric_key)
         if metric_id:
@@ -214,6 +232,39 @@ class Collector:
             ts = time.time()
             raw_json = json.dumps({"direction_cardinal": str(payload)}, separators=(",", ":"))
             self.store(ts, device_id, "wind_direction_cardinal", 0.0, None, raw_json)
+
+    def handle_env_payload(self, topic, payload):
+        parts = topic.split("/")
+        if len(parts) < 3:
+            return
+        device_id = "bme280_ground"
+
+        metric_map = {
+            "temperature_c": ("temp_ground_c", "C"),
+            "humidity": ("rh_ground_pct", "pct"),
+        }
+        metric = parts[2]
+        mapped = metric_map.get(metric)
+        if not mapped:
+            return
+        metric_id, unit = mapped
+        try:
+            value = float(payload)
+        except Exception:
+            return
+        ts = time.time()
+        self.store(ts, device_id, metric_id, value, unit, json.dumps({"value": value}, separators=(",", ":")))
+
+    def handle_light_payload(self, topic, payload):
+        parts = topic.split("/")
+        if len(parts) < 3 or parts[2] != "lux":
+            return
+        try:
+            value = float(payload)
+        except Exception:
+            return
+        ts = time.time()
+        self.store(ts, "wind_esp8266", "light_lux", value, "lux", json.dumps({"value": value}, separators=(",", ":")))
 
     def handle_rain_payload(self, topic, payload):
         parts = topic.split("/")
@@ -276,6 +327,10 @@ class Collector:
                 self.handle_wind_payload(topic, payload)
             elif topic.startswith("meteo/rain/"):
                 self.handle_rain_payload(topic, payload)
+            elif topic.startswith("meteo/env/"):
+                self.handle_env_payload(topic, payload)
+            elif topic.startswith("meteo/light/"):
+                self.handle_light_payload(topic, payload)
         except Exception as exc:
             print(f"[collector] error: {exc}")
 
@@ -355,8 +410,58 @@ class Collector:
         if self.gps_enabled():
             self.gps_thread = threading.Thread(target=self.gps_read_loop, daemon=True)
             self.gps_thread.start()
+        if self.sc_cfg.get("enabled", False):
+            self.sc_thread = threading.Thread(target=self.sensor_community_loop, daemon=True)
+            self.sc_thread.start()
         self.client.connect(host, port, keepalive=60)
         self.client.loop_forever()
+
+    def sensor_community_loop(self):
+        url = self.sc_cfg.get("url", "").strip()
+        if not url:
+            print("[collector] Sensor.Community url missing", flush=True)
+            return
+        interval = float(self.sc_cfg.get("interval_sec", 60))
+        device_id = self.sc_cfg.get("device_id", "sensor_community_1")
+        print(f"[collector] Sensor.Community polling {url}", flush=True)
+        while True:
+            try:
+                with urlopen(url, timeout=5) as resp:
+                    payload = json.loads(resp.read().decode("utf-8"))
+                values = payload.get("sensordatavalues", [])
+                age = payload.get("age")
+                try:
+                    age_sec = float(age)
+                except Exception:
+                    age_sec = 0.0
+                ts = time.time() - age_sec
+
+                def emit(metric_id, value, unit):
+                    numeric = float(value)
+                    # Sensor.Community pressure is commonly reported in Pa; normalize to hPa.
+                    if metric_id == "pressure_hpa" and numeric > 2000:
+                        numeric = numeric / 100.0
+                    self.store(ts, device_id, metric_id, numeric, unit, json.dumps(payload, separators=(",", ":")))
+
+                for v in values:
+                    key = str(v.get("value_type", "")).strip()
+                    val = v.get("value")
+                    if val is None:
+                        continue
+                    key_upper = key.upper()
+                    if key_upper == "SDS_P1":
+                        emit("pm10_ugm3", val, "ug/m3")
+                    elif key_upper == "SDS_P2":
+                        emit("pm2_5_ugm3", val, "ug/m3")
+                    elif key_upper in ("BME280_TEMPERATURE", "BMP280_TEMPERATURE", "TEMPERATURE"):
+                        emit("temp_c", val, "C")
+                    elif key_upper in ("BME280_HUMIDITY", "HUMIDITY"):
+                        emit("rh_pct", val, "pct")
+                    elif key_upper in ("BME280_PRESSURE", "BMP280_PRESSURE", "PRESSURE"):
+                        emit("pressure_hpa", val, "hPa")
+            except (URLError, HTTPError, TimeoutError, json.JSONDecodeError, ValueError) as exc:
+                print(f"[collector] Sensor.Community error: {exc}", flush=True)
+            time.sleep(max(5, interval))
 
 
 if __name__ == "__main__":

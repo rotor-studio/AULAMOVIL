@@ -235,6 +235,195 @@ def get_latest_map():
     return out
 
 
+def get_metric(latest_map, metric_id, device_id=None):
+    rows = [v for v in latest_map.values() if v["metric_id"] == metric_id]
+    if device_id:
+        rows = [v for v in rows if v["device_id"] == device_id]
+    if not rows:
+        return None
+    rows.sort(key=lambda item: item.get("ts") or 0, reverse=True)
+    return rows[0]
+
+
+def get_history(metric_id, device_id=None, seconds=21600):
+    end = time.time()
+    start = end - seconds
+    conn = get_conn()
+    if device_id:
+        rows = conn.execute(
+            "SELECT ts, value, unit, device_id, metric_id FROM readings WHERE metric_id=? AND device_id=? AND ts BETWEEN ? AND ? ORDER BY ts ASC",
+            (metric_id, device_id, start, end),
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT ts, value, unit, device_id, metric_id FROM readings WHERE metric_id=? AND ts BETWEEN ? AND ? ORDER BY ts ASC",
+            (metric_id, start, end),
+        ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def sample_before(points, seconds_ago):
+    if not points:
+        return None
+    cutoff = time.time() - seconds_ago
+    candidate = None
+    for item in points:
+        if item["ts"] <= cutoff:
+            candidate = item
+        else:
+            break
+    return candidate or points[0]
+
+
+def compute_forecast_payload():
+    latest = get_latest_map()
+    pressure = get_metric(latest, "pressure_hpa", "sensor_community_1")
+    humidity = get_metric(latest, "rh_pct", "sensor_community_1")
+    temperature = get_metric(latest, "temp_c", "sensor_community_1")
+    wind = get_metric(latest, "wind_speed_ms", "wind_esp8266")
+    rain_rate = get_metric(latest, "rain_rate_mmh", "rain_node_mcu")
+    rain_total = get_metric(latest, "rain_mm_total", "rain_node_mcu") or get_metric(latest, "rain_mm", "rain_node_mcu")
+    light = get_metric(latest, "light_lux", "wind_esp8266")
+    pm10 = get_metric(latest, "pm10_ugm3", "sensor_community_1")
+    pm25 = get_metric(latest, "pm2_5_ugm3", "sensor_community_1")
+
+    pressure_series = get_history("pressure_hpa", "sensor_community_1")
+    humidity_series = get_history("rh_pct", "sensor_community_1")
+    rain_series = get_history("rain_mm_total", "rain_node_mcu")
+
+    pressure_prev = sample_before(pressure_series, 6 * 3600)
+    humidity_prev = sample_before(humidity_series, 6 * 3600)
+    rain_prev = sample_before(rain_series, 6 * 3600)
+
+    pressure_trend = None
+    humidity_trend = None
+    rain_delta = None
+    if pressure and pressure_prev:
+        pressure_trend = float(pressure["value"]) - float(pressure_prev["value"])
+    if humidity and humidity_prev:
+        humidity_trend = float(humidity["value"]) - float(humidity_prev["value"])
+    if rain_total and rain_prev:
+        rain_delta = float(rain_total["value"]) - float(rain_prev["value"])
+
+    label = "Seguimiento local"
+    summary = "Datos insuficientes para resumir la tendencia."
+    detail = "La estación necesita más histórico para una lectura más clara."
+    confidence = "baja"
+    icon = "cloud"
+    signals = []
+
+    if pressure_trend is not None:
+        if pressure_trend <= -3:
+            signals.append("presion_bajando")
+        elif pressure_trend >= 3:
+            signals.append("presion_subiendo")
+        else:
+            signals.append("presion_estable")
+    if humidity_trend is not None:
+        if humidity_trend >= 8:
+            signals.append("humedad_subiendo")
+        elif humidity_trend <= -8:
+            signals.append("humedad_bajando")
+    if rain_delta is not None and rain_delta > 0.2:
+        signals.append("lluvia_reciente")
+    if wind and float(wind["value"]) >= 8:
+        signals.append("viento_moderado")
+
+    if pressure and humidity:
+        confidence = "media"
+        if rain_rate and float(rain_rate["value"]) > 0.1:
+            label = "Lluvia en curso"
+            summary = "Lluvia activa o muy reciente."
+            detail = "El pluviómetro ya detecta precipitación. Puede continuar a corto plazo."
+            icon = "rain"
+        elif pressure_trend is not None and pressure_trend <= -2.5 and float(humidity["value"]) >= 75:
+            label = "Inestabilidad probable"
+            summary = "Podrían aumentar las nubes y aparecer lluvia débil."
+            detail = "La presión cae y la humedad es alta. Eso suele apuntar a tiempo más inestable."
+            icon = "storm"
+        elif pressure_trend is not None and pressure_trend >= 2.5 and float(humidity["value"]) <= 75:
+            label = "Mejora"
+            summary = "La tendencia apunta a un tiempo más estable."
+            detail = "La presión sube y la humedad no está disparada."
+            icon = "sun"
+        else:
+            label = "Estable"
+            summary = "No se esperan cambios bruscos."
+            detail = "Las variables se mantienen sin señales fuertes de empeoramiento."
+            icon = "cloud"
+
+    pm10_val = float(pm10["value"]) if pm10 else None
+    pm25_val = float(pm25["value"]) if pm25 else None
+    air_band = "sin_dato"
+    air_label = "Sin datos"
+    air_color = {"name": "gray", "hex": "#9CA3AF", "rgb": [156, 163, 175]}
+    if pm10_val is not None or pm25_val is not None:
+        if (pm25_val is not None and pm25_val > 55) or (pm10_val is not None and pm10_val > 100):
+            air_band = "muy_mala"
+            air_label = "Aire muy cargado"
+            air_color = {"name": "red", "hex": "#E74C3C", "rgb": [231, 76, 60]}
+        elif (pm25_val is not None and pm25_val > 35) or (pm10_val is not None and pm10_val > 50):
+            air_band = "mala"
+            air_label = "Aire cargado"
+            air_color = {"name": "orange", "hex": "#F39C12", "rgb": [243, 156, 18]}
+        elif (pm25_val is not None and pm25_val > 12) or (pm10_val is not None and pm10_val > 20):
+            air_band = "regular"
+            air_label = "Aire regular"
+            air_color = {"name": "yellow", "hex": "#F1C40F", "rgb": [241, 196, 15]}
+        else:
+            air_band = "buena"
+            air_label = "Aire limpio"
+            air_color = {"name": "green", "hex": "#2ECC71", "rgb": [46, 204, 113]}
+
+    headline = label
+    line1 = summary
+    line2 = air_label
+    if len(line1) > 64:
+        line1 = line1[:61] + "..."
+    if len(line2) > 64:
+        line2 = line2[:61] + "..."
+
+    last_ts = max([
+        item["ts"] for item in [pressure, humidity, temperature, wind, rain_rate, rain_total, light, pm10, pm25] if item
+    ], default=0)
+
+    return {
+        "ts": time.time(),
+        "source_ts": last_ts,
+        "forecast": {
+            "label": label,
+            "summary": summary,
+            "detail": detail,
+            "confidence": confidence,
+            "icon": icon,
+            "signals": signals,
+        },
+        "air": {
+            "pm10_ugm3": pm10_val,
+            "pm25_ugm3": pm25_val,
+            "band": air_band,
+            "label": air_label,
+            "color": air_color,
+        },
+        "display": {
+            "headline": headline,
+            "line1": line1,
+            "line2": line2,
+            "brightness": 64,
+            "effect": "solid",
+        },
+        "metrics": {
+            "temp_c": float(temperature["value"]) if temperature else None,
+            "rh_pct": float(humidity["value"]) if humidity else None,
+            "pressure_hpa": float(pressure["value"]) if pressure else None,
+            "wind_speed_ms": float(wind["value"]) if wind else None,
+            "rain_mm_total": float(rain_total["value"]) if rain_total else None,
+            "light_lux": float(light["value"]) if light else None,
+        },
+    }
+
+
 @app.get("/api/latest")
 def api_latest():
     return get_latest_map()
@@ -265,6 +454,12 @@ def api_history(
     conn.close()
 
     return [dict(r) for r in rows]
+
+
+
+@app.get("/api/sign/latest")
+def api_sign_latest():
+    return compute_forecast_payload()
 
 
 @app.get("/api/stream")
@@ -376,8 +571,8 @@ def index():
       margin: 18px;
       color: var(--ink);
       background:
-        radial-gradient(1200px 400px at 20% -10%, rgba(255,255,255,0.8), transparent 60%),
-        linear-gradient(180deg, var(--sky-1), var(--sky-2) 35%, var(--sky-3) 70%, var(--sky-4));
+        linear-gradient(180deg, rgba(238,247,255,0.75), rgba(199,230,255,0.6)),
+        url('/static/bg.jpg') center/cover no-repeat fixed;
       min-height: 100vh;
     }}
     h1 {{ letter-spacing: 0.4px; margin-bottom: 10px; }}
@@ -439,8 +634,48 @@ def index():
     .dot {{ display: inline-block; width: 10px; height: 10px; border-radius: 50%; }}
     .dot.online {{ background: #2ecc71; box-shadow: 0 0 6px rgba(46, 204, 113, 0.6); }}
     .dot.offline {{ background: #e74c3c; box-shadow: 0 0 6px rgba(231, 76, 60, 0.4); }}
+    .card-wide {{ grid-column: 1 / -1; }}
+    .forecast-card {{
+      background:
+        radial-gradient(circle at top right, rgba(255, 219, 120, 0.55), transparent 28%),
+        linear-gradient(135deg, rgba(37, 113, 186, 0.18), rgba(123, 183, 230, 0.28)),
+        rgba(255, 255, 255, 0.92);
+      border-color: rgba(61, 142, 207, 0.28);
+      min-height: 180px;
+    }}
+    .forecast-card .forecast-top {{
+      display: flex;
+      gap: 16px;
+      align-items: center;
+      margin-bottom: 10px;
+      flex-wrap: wrap;
+    }}
+    .forecast-card .forecast-icon {{
+      width: 72px;
+      height: 72px;
+      border-radius: 50%;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      background: rgba(255,255,255,0.72);
+      border: 1px solid rgba(61, 142, 207, 0.22);
+      box-shadow: inset 0 1px 0 rgba(255,255,255,0.85);
+      flex: 0 0 auto;
+    }}
+    .forecast-card .forecast-title {{
+      font-size: 1.15rem;
+      letter-spacing: 0.2px;
+    }}
+    .forecast-card .forecast-summary {{
+      font-size: 1.05rem;
+      margin: 6px 0 10px;
+    }}
+    .forecast-card .forecast-signals {{
+      opacity: 0.85;
+    }}
     @media (max-width: 720px) {{
       .gps-box {{ grid-template-columns: 1fr; }}
+      .forecast-card .forecast-top {{ align-items: flex-start; }}
     }}
   </style>
 </head>
@@ -450,10 +685,11 @@ def index():
     <div class=\"tab active\" data-tab=\"dashboard\">Dashboard</div>
     <div class=\"tab\" data-tab=\"wind\">Viento</div>
     <div class=\"tab\" data-tab=\"rain\">Pluviómetro</div>
-    <div class=\"tab\" data-tab=\"bme\">Temp/Humedad/Presión</div>
+    <div class=\"tab\" data-tab=\"bme\">Temp/Humedad/Presión/Lux</div>
     <div class=\"tab\" data-tab=\"air\">PM y Aire</div>
     <div class=\"tab\" data-tab=\"gps\">Posición</div>
     <div class=\"tab\" data-tab=\"camera\">Cámara</div>
+    <div class=\"tab\" data-tab=\"forecast\">Interpretación 24h</div>
   </div>
 
   <div id=\"dashboard\" class=\"panel active\">
@@ -461,9 +697,11 @@ def index():
       <div id=\"dashWind\" class=\"card\"></div>
       <div id=\"dashRain\" class=\"card\"></div>
       <div id=\"dashBme\" class=\"card\"></div>
+      <div id=\"dashLight\" class=\"card\"></div>
       <div id=\"dashAir\" class=\"card\"></div>
       <div id=\"dashGps\" class=\"card\"></div>
       <div id=\"dashCam\" class=\"card\"></div>
+      <div id=\"dashForecast\" class=\"card card-wide forecast-card\"></div>
     </div>
   </div>
 
@@ -490,7 +728,7 @@ def index():
   </div>
 
   <div id=\"bme\" class=\"panel\">
-    <h2>Temperatura / Humedad / Presión</h2>
+    <h2>Temperatura / Humedad / Presión / Lux</h2>
     <div class=\"status-line\">Estado: <span id=\"bmeStatus\" class=\"dot offline\"></span><span id=\"bmeStatusText\">Offline</span></div>
     <table>
       <thead><tr><th>Métrica</th><th>Valor</th><th>Actualizado</th></tr></thead>
@@ -507,6 +745,28 @@ def index():
     </table>
   </div>
 
+
+  <div id=\"forecast\" class=\"panel\">
+    <h2>Interpretación local a 24 horas</h2>
+    <div class=\"card\">
+      <div id=\"forecastSummaryTitle\"><strong>Calculando...</strong></div>
+      <p id=\"forecastSummaryText\">Esperando datos de la estación.</p>
+      <p id=\"forecastSummaryDetail\" style=\"opacity:0.85;\"></p>
+      <p id=\"forecastConfidence\"></p>
+    </div>
+    <div class=\"card\">
+      <h3>Variables que usamos</h3>
+      <div id=\"forecastVariables\"></div>
+    </div>
+    <div class=\"card\">
+      <h3>Cómo se interpreta</h3>
+      <div id=\"forecastAlgorithm\"></div>
+    </div>
+    <div class=\"card\">
+      <h3>Señales observadas</h3>
+      <div id=\"forecastSignals\"></div>
+    </div>
+  </div>
   <div id=\"gps\" class=\"panel\">
     <h2>Posición (GPS)</h2>
     <div class=\"status-line\">Estado: <span id=\"gpsStatus\" class=\"dot offline\"></span><span id=\"gpsStatusText\">Offline</span></div>
@@ -575,6 +835,13 @@ def index():
 
     const WIND_METRIC_PREFIX = 'wind_';
     const ONLINE_MAX_AGE_SEC = 120;
+    const STATUS_MAX_AGE_SEC = {{
+      wind_esp8266: 120,
+      rain_node_mcu: 300,
+      bme280_ground: 300,
+      sensor_community_1: 300,
+      gps_usb_1: 180,
+    }};
 
     const DEFAULT_GPS = {{ lat: 43.5550, lon: -5.9240, label: 'Aviles (ejemplo)' }};
     const DASH_CAM_CHECK_MS = 15000;
@@ -639,13 +906,13 @@ def index():
       return METRIC_NAMES[id] || id;
     }}
 
-    function isOnlineTs(ts) {{
+    function isOnlineTs(ts, maxAgeSec = ONLINE_MAX_AGE_SEC) {{
       if (!ts) return false;
-      return (Date.now()/1000 - ts) <= ONLINE_MAX_AGE_SEC;
+      return (Date.now()/1000 - ts) <= maxAgeSec;
     }}
 
-    function dotHtml(ts) {{
-      return `<span class="dot ${{isOnlineTs(ts) ? 'online' : 'offline'}}"></span>`;
+    function dotHtml(ts, maxAgeSec = ONLINE_MAX_AGE_SEC) {{
+      return `<span class="dot ${{isOnlineTs(ts, maxAgeSec) ? 'online' : 'offline'}}"></span>`;
     }}
 
     function metricUnit(id, fallback) {{
@@ -655,6 +922,11 @@ def index():
     function getMetric(data, id) {{
       const key = Object.keys(data).find(k => data[k].metric_id === id);
       return key ? data[key] : null;
+    }}
+
+    function getFreshMetric(data, id) {{
+      const metric = getMetric(data, id);
+      return metric && isOnlineTs(metric.ts) ? metric : null;
     }}
 
     function max_ts(...items) {{
@@ -667,10 +939,10 @@ def index():
       return Math.max(...items.map(i => i.ts || 0));
     }}
 
-    function setStatus(id, ts) {{
+    function setStatus(id, ts, maxAgeSec = ONLINE_MAX_AGE_SEC) {{
       const dot = document.getElementById(id);
       const text = document.getElementById(id + 'Text');
-      const online = isOnlineTs(ts);
+      const online = isOnlineTs(ts, maxAgeSec);
       if (dot) {{
         dot.classList.toggle('online', online);
         dot.classList.toggle('offline', !online);
@@ -921,6 +1193,233 @@ def index():
     }}
 
 
+let lastForecastFetch = 0;
+let lastForecastData = null;
+const FORECAST_REFRESH_MS = 120000;
+
+function latestMetricById(data, metricId, preferredDevice) {{
+  const items = Object.values(data).filter(v => v.metric_id === metricId);
+  if (!items.length) return null;
+  if (preferredDevice) {{
+    const preferred = items.find(v => v.device_id === preferredDevice);
+    if (preferred) return preferred;
+  }}
+  items.sort((a, b) => (b.ts || 0) - (a.ts || 0));
+  return items[0] || null;
+}}
+
+function sampleBefore(points, secondsAgo) {{
+  if (!points || !points.length) return null;
+  const cutoff = Date.now()/1000 - secondsAgo;
+  let candidate = null;
+  for (const item of points) {{
+    if (item.ts <= cutoff) candidate = item;
+    else break;
+  }}
+  return candidate || points[0];
+}}
+
+function formatMaybe(value, digits = 1) {{
+  if (value === null || value === undefined || Number.isNaN(Number(value))) return 'sin dato';
+  return Number(value).toFixed(digits);
+}}
+
+function forecastIcon(label) {{
+  if (label === 'Lluvia en curso') {{
+    return `<svg viewBox="0 0 72 72" width="52" height="52" aria-hidden="true">
+      <circle cx="24" cy="27" r="12" fill="#f6c453"></circle>
+      <g fill="#6ba7d6">
+        <circle cx="36" cy="35" r="12"></circle>
+        <circle cx="47" cy="35" r="10"></circle>
+        <circle cx="27" cy="39" r="9"></circle>
+        <rect x="24" y="35" width="30" height="12" rx="6"></rect>
+      </g>
+      <g stroke="#2b6cb0" stroke-width="4" stroke-linecap="round">
+        <line x1="28" y1="52" x2="24" y2="60"></line>
+        <line x1="40" y1="52" x2="36" y2="60"></line>
+        <line x1="52" y1="52" x2="48" y2="60"></line>
+      </g>
+    </svg>`;
+  }}
+  if (label === 'Inestabilidad probable') {{
+    return `<svg viewBox="0 0 72 72" width="52" height="52" aria-hidden="true">
+      <circle cx="23" cy="24" r="11" fill="#ffd45f"></circle>
+      <g fill="#7aa9d6">
+        <circle cx="36" cy="35" r="12"></circle>
+        <circle cx="48" cy="35" r="10"></circle>
+        <circle cx="28" cy="39" r="9"></circle>
+        <rect x="24" y="35" width="32" height="12" rx="6"></rect>
+      </g>
+      <path d="M37 47 L31 60 L39 60 L34 69 L48 52 L40 52 L45 47 Z" fill="#f4b942"></path>
+    </svg>`;
+  }}
+  if (label === 'Mejora') {{
+    return `<svg viewBox="0 0 72 72" width="52" height="52" aria-hidden="true">
+      <circle cx="36" cy="36" r="14" fill="#ffd45f"></circle>
+      <g stroke="#f4b942" stroke-width="4" stroke-linecap="round">
+        <line x1="36" y1="10" x2="36" y2="20"></line>
+        <line x1="36" y1="52" x2="36" y2="62"></line>
+        <line x1="10" y1="36" x2="20" y2="36"></line>
+        <line x1="52" y1="36" x2="62" y2="36"></line>
+        <line x1="18" y1="18" x2="24" y2="24"></line>
+        <line x1="48" y1="48" x2="54" y2="54"></line>
+        <line x1="18" y1="54" x2="24" y2="48"></line>
+        <line x1="48" y1="24" x2="54" y2="18"></line>
+      </g>
+    </svg>`;
+  }}
+  return `<svg viewBox="0 0 72 72" width="52" height="52" aria-hidden="true">
+    <circle cx="25" cy="26" r="12" fill="#ffd45f"></circle>
+    <g fill="#89b7de">
+      <circle cx="37" cy="37" r="12"></circle>
+      <circle cx="48" cy="37" r="10"></circle>
+      <circle cx="28" cy="41" r="9"></circle>
+      <rect x="25" y="37" width="31" height="12" rx="6"></rect>
+    </g>
+  </svg>`;
+}}
+
+async function fetchHistoryMetric(metric, device) {{
+  let url = `/api/history?metric=${{encodeURIComponent(metric)}}`;
+  if (device) url += `&device=${{encodeURIComponent(device)}}`;
+  const res = await fetch(url);
+  return await res.json();
+}}
+
+async function buildForecast(data) {{
+  const pressure = latestMetricById(data, 'pressure_hpa', 'sensor_community_1');
+  const humidity = latestMetricById(data, 'rh_pct', 'sensor_community_1');
+  const temperature = latestMetricById(data, 'temp_c', 'sensor_community_1');
+  const wind = latestMetricById(data, 'wind_speed_ms', 'wind_esp8266');
+  const rainRate = latestMetricById(data, 'rain_rate_mmh', 'rain_node_mcu');
+  const rainTotal = latestMetricById(data, 'rain_mm_total', 'rain_node_mcu');
+  const light = latestMetricById(data, 'light_lux', 'wind_esp8266');
+  const pm10 = latestMetricById(data, 'pm10_ugm3', 'sensor_community_1');
+  const pm25 = latestMetricById(data, 'pm2_5_ugm3', 'sensor_community_1');
+
+  const [pressureSeries, humiditySeries, rainSeries] = await Promise.all([
+    fetchHistoryMetric('pressure_hpa', 'sensor_community_1'),
+    fetchHistoryMetric('rh_pct', 'sensor_community_1'),
+    fetchHistoryMetric('rain_mm_total', 'rain_node_mcu'),
+  ]);
+
+  const pressure6h = sampleBefore(pressureSeries, 6 * 3600);
+  const humidity6h = sampleBefore(humiditySeries, 6 * 3600);
+  const rain6h = sampleBefore(rainSeries, 6 * 3600);
+
+  const pressureTrend = pressure && pressure6h ? Number(pressure.value) - Number(pressure6h.value) : null;
+  const humidityTrend = humidity && humidity6h ? Number(humidity.value) - Number(humidity6h.value) : null;
+  const rainDelta = rainTotal && rain6h ? Number(rainTotal.value) - Number(rain6h.value) : null;
+
+  let label = 'Seguimiento local';
+  let summary = 'Todavía no hay suficientes datos para una interpretación local de las próximas 24 horas.';
+  let detail = 'La estación necesita más histórico o más variables activas para resumir la tendencia.';
+  let confidence = 'baja';
+  const signals = [];
+
+  if (pressureTrend !== null) {{
+    if (pressureTrend <= -3) signals.push('La presión ha bajado de forma clara en las últimas 6 horas.');
+    else if (pressureTrend >= 3) signals.push('La presión ha subido de forma clara en las últimas 6 horas.');
+    else signals.push('La presión se mantiene bastante estable.');
+  }}
+  if (humidityTrend !== null) {{
+    if (humidityTrend >= 8) signals.push('La humedad está subiendo y el aire se siente más cargado.');
+    else if (humidityTrend <= -8) signals.push('La humedad baja y el ambiente se seca algo más.');
+  }}
+  if (rainDelta !== null) {{
+    if (rainDelta > 0.2) signals.push('Ha habido lluvia reciente según el pluviómetro.');
+    else signals.push('No se observa lluvia reciente en el acumulado cercano.');
+  }}
+  if (wind && Number(wind.value) >= 8) signals.push('El viento ya se mueve con intensidad moderada o alta.');
+  if (pm10 || pm25) {{
+    const pmText = [pm10 ? `PM10 ${{formatMaybe(pm10.value, 1)}} ug/m3` : null, pm25 ? `PM2.5 ${{formatMaybe(pm25.value, 1)}} ug/m3` : null].filter(Boolean).join(', ');
+    signals.push(`Las partículas se usan como contexto ambiental: ${{pmText}}.`);
+  }}
+
+  if (pressure && humidity) {{
+    confidence = 'media';
+    if (rainRate && Number(rainRate.value) > 0.1) {{
+      label = 'Lluvia en curso';
+      summary = 'Ahora mismo hay lluvia o indicios directos de precipitación en la estación.';
+      detail = 'El pluviómetro ya marca precipitación reciente o activa. Si la presión sigue baja y la humedad alta, es razonable esperar continuidad a corto plazo.';
+    }} else if (pressureTrend !== null && pressureTrend <= -2.5 && Number(humidity.value) >= 75) {{
+      label = 'Inestabilidad probable';
+      summary = 'En las próximas 24 horas podría aumentar la nubosidad y no se descarta lluvia débil.';
+      detail = 'La presión cae y la humedad es alta. Esa combinación suele apuntar a un ambiente más inestable, aunque no garantiza precipitación.';
+    }} else if (pressureTrend !== null && pressureTrend >= 2.5 && Number(humidity.value) <= 75) {{
+      label = 'Mejora';
+      summary = 'La tendencia general apunta a un tiempo más estable durante las próximas 24 horas.';
+      detail = 'La presión sube y la humedad no está disparada. Eso suele acompañar una situación más tranquila y menos propensa a lluvia.';
+    }} else {{
+      label = 'Estable';
+      summary = 'No se esperan cambios bruscos en las próximas 24 horas según la estación local.';
+      detail = 'Las variables principales no muestran una señal fuerte de empeoramiento ni de mejora rápida.';
+    }}
+  }}
+
+  return {{
+    label,
+    summary,
+    detail,
+    confidence,
+    signals,
+    variables: [
+      {{ name: 'Presión atmosférica', value: pressure ? `${{formatMaybe(pressure.value, 1)}} hPa` : 'sin dato', description: 'Cuando baja con rapidez suele avisar de inestabilidad. Cuando sube, suele acompañar tiempo más estable.' }},
+      {{ name: 'Humedad relativa', value: humidity ? `${{formatMaybe(humidity.value, 1)}} %` : 'sin dato', description: 'Una humedad alta indica aire cargado. Si además baja la presión, aumenta la posibilidad de nubosidad o lluvia.' }},
+      {{ name: 'Temperatura en altura', value: temperature ? `${{formatMaybe(temperature.value, 1)}} C` : 'sin dato', description: 'Describe el ambiente en la parte alta de la estación. Ayuda a contextualizar, aunque por sí sola no predice cambios de tiempo.' }},
+      {{ name: 'Lluvia reciente', value: rainTotal ? `${{formatMaybe(rainTotal.value, 2)}} mm acumulados` : 'sin dato', description: 'Nos ayuda a saber si ya hay un episodio húmedo en marcha o si la lluvia ha sido reciente.' }},
+      {{ name: 'Viento', value: wind ? `${{formatMaybe(wind.value, 1)}} m/s` : 'sin dato', description: 'Si aumenta, puede reforzar la sensación de cambio y hacer el tiempo más incómodo.' }},
+      {{ name: 'Luminosidad', value: light ? `${{formatMaybe(light.value, 1)}} lux` : 'sin dato', description: 'No predice por sí sola, pero ayuda a interpretar si el entorno está más abierto o más cubierto.' }},
+      {{ name: 'Partículas en el aire', value: [pm10 ? `PM10 ${{formatMaybe(pm10.value, 1)}} ug/m3` : null, pm25 ? `PM2.5 ${{formatMaybe(pm25.value, 1)}} ug/m3` : null].filter(Boolean).join(', ') || 'sin dato', description: 'Las partículas no predicen la lluvia por sí solas, pero sí describen la calidad del aire y el contexto ambiental.' }},
+    ],
+    algorithm: [
+      'Primero miramos la presión, porque es una de las señales más útiles para detectar cambios de estabilidad.',
+      'Después comparamos humedad y lluvia reciente para saber si el ambiente está seco, estable o cargado.',
+      'Añadimos viento y luminosidad para interpretar si el tiempo se siente más abierto, más cubierto o más incómodo.',
+      'Las partículas PM10 y PM2.5 se incluyen como contexto de calidad del aire, no como predictor directo de lluvia.',
+      'Con todo eso generamos una etiqueta simple: estable, mejora, inestabilidad probable o lluvia en curso.',
+    ],
+  }};
+}}
+
+async function renderForecast(data) {{
+  const now = Date.now();
+  if (!lastForecastData || (now - lastForecastFetch) > FORECAST_REFRESH_MS) {{
+    lastForecastData = await buildForecast(data);
+    lastForecastFetch = now;
+  }}
+  const forecast = lastForecastData;
+  const dash = document.getElementById('dashForecast');
+  if (dash) {{
+    dash.innerHTML = `
+      <div class="forecast-top">
+        <div class="forecast-icon">${{forecastIcon(forecast.label)}}</div>
+        <div>
+          <div class="forecast-title"><strong>${{dotHtml(Date.now()/1000, 600)}} Interpretación 24h</strong></div>
+          <div><strong>${{forecast.label}}</strong></div>
+        </div>
+      </div>
+      <div class="forecast-summary">${{forecast.summary}}</div>
+      <div class="forecast-signals"><small>${{(forecast.signals || []).slice(0, 3).join(' ')}}</small></div>
+    `;
+  }}
+  const title = document.getElementById('forecastSummaryTitle');
+  const summary = document.getElementById('forecastSummaryText');
+  const detail = document.getElementById('forecastSummaryDetail');
+  const confidence = document.getElementById('forecastConfidence');
+  const variables = document.getElementById('forecastVariables');
+  const algorithm = document.getElementById('forecastAlgorithm');
+  const signals = document.getElementById('forecastSignals');
+  if (title) title.innerHTML = `<strong>${{forecast.label}}</strong>`;
+  if (summary) summary.textContent = forecast.summary;
+  if (detail) detail.textContent = forecast.detail;
+  if (confidence) confidence.textContent = `Confianza orientativa: ${{forecast.confidence}}. Esta tarjeta resume una tendencia local, no un pronóstico oficial.`;
+  if (variables) variables.innerHTML = forecast.variables.map(v => `<div style="margin-bottom:10px;"><strong>${{v.name}}</strong>: ${{v.value}}<br><span style="opacity:0.85;">${{v.description}}</span></div>`).join('');
+  if (algorithm) algorithm.innerHTML = `<ol>${{forecast.algorithm.map(step => `<li style="margin-bottom:8px;">${{step}}</li>`).join('')}}</ol>`;
+  if (signals) signals.innerHTML = forecast.signals.length ? `<ul>${{forecast.signals.map(item => `<li style="margin-bottom:8px;">${{item}}</li>`).join('')}}</ul>` : '<p>Sin señales suficientes todavía.</p>';
+}}
+
+
     async function loadLatest() {{
       const res = await fetch('/api/latest');
       const data = await res.json();
@@ -937,6 +1436,7 @@ def index():
       const t = getMetric(data, 'temp_c');
       const rh = getMetric(data, 'rh_pct');
       const p = getMetric(data, 'pressure_hpa');
+      const lux = getMetric(data, 'light_lux');
       const t2 = getMetric(data, 'temp_ground_c');
       const rh2 = getMetric(data, 'rh_ground_pct');
       setCard(document.getElementById('dashBme'), 'Temp / Humedad / Presión', [
@@ -947,6 +1447,10 @@ def index():
         ['Humedad suelo (sombra)', rh2 ? `${{rh2.value}} ${{metricUnit('rh_ground_pct', rh2.unit)}}` : '--']
       ], max_ts(t, rh, p, t2, rh2));
 
+      setCard(document.getElementById('dashLight'), 'Luminosidad', [
+        ['Nivel de luz', lux ? `${{lux.value}} ${{metricUnit('light_lux', lux.unit)}}` : '--']
+      ], max_ts(lux));
+
       const pm10 = getMetric(data, 'pm10_ugm3');
       const pm25 = getMetric(data, 'pm2_5_ugm3');
       setCard(document.getElementById('dashAir'), 'PM / Calidad del aire', [
@@ -956,17 +1460,19 @@ def index():
 
       renderDashGps(data);
       renderDashCam();
+      await renderForecast(data);
 
-      const bmeTs = Math.max(latestTsByDevice(data, 'bme280_local'), latestTsByDevice(data, 'bme280_ground'));
-      setStatus('windStatus', latestTsByDevice(data, 'wind_esp8266'));
-      setStatus('rainStatus', latestTsByDevice(data, 'rain_node_mcu'));
-      setStatus('bmeStatus', bmeTs);
-      setStatus('airStatus', latestTsByDevice(data, 'pm_sensor_1'));
-      setStatus('gpsStatus', latestTsByDevice(data, 'gps_usb_1'));
+      const bmeTs = Math.max(latestTsByDevice(data, 'bme280_local'), latestTsByDevice(data, 'bme280_ground'), getMetric(data, 'light_lux') ? getMetric(data, 'light_lux').ts : 0);
+      setStatus('windStatus', latestTsByDevice(data, 'wind_esp8266'), STATUS_MAX_AGE_SEC.wind_esp8266);
+      setStatus('rainStatus', latestTsByDevice(data, 'rain_node_mcu'), STATUS_MAX_AGE_SEC.rain_node_mcu);
+      setStatus('bmeStatus', bmeTs, Math.max(STATUS_MAX_AGE_SEC.bme280_ground, STATUS_MAX_AGE_SEC.sensor_community_1));
+      const airTs = Math.max(latestTsByDevice(data, 'pm_sensor_1'), latestTsByDevice(data, 'sensor_community_1'));
+      setStatus('airStatus', airTs, STATUS_MAX_AGE_SEC.sensor_community_1);
+      setStatus('gpsStatus', latestTsByDevice(data, 'gps_usb_1'), STATUS_MAX_AGE_SEC.gps_usb_1);
 
       renderWind(data);
       renderSimpleTable('rainBody', ['rain_tips_total','rain_mm_total','rain_mm_interval','rain_rate_mmh','rain_last_tip_ms','rain_since_last_tip_ms','rain_mm'], data);
-      renderSimpleTable('bmeBody', ['temp_c','rh_pct','pressure_hpa','temp_ground_c','rh_ground_pct'], data);
+      renderSimpleTable('bmeBody', ['temp_c','rh_pct','pressure_hpa','light_lux','temp_ground_c','rh_ground_pct'], data);
       renderSimpleTable('airBody', ['pm10_ugm3','pm2_5_ugm3'], data);
       renderSimpleTable('gpsBody', ['gps_lat','gps_lon','gps_alt'], data);
       renderGPS(data);
@@ -976,7 +1482,7 @@ def index():
     function renderWind(data) {{
       const body = document.getElementById('windBody');
       body.innerHTML = '';
-      const rows = Object.values(data).filter(v => v.device_id === 'wind_esp8266');
+      const rows = Object.values(data).filter(v => v.device_id === 'wind_esp8266' && isWindMetric(v.metric_id));
       rows.sort((a,b) => a.metric_id.localeCompare(b.metric_id));
       const dirDegRow = rows.find(r => r.metric_id === 'wind_direction_deg');
       const dirDeg = dirDegRow ? Number(dirDegRow.value) : undefined;
