@@ -1,13 +1,21 @@
 ﻿import asyncio
 import json
 import os
+import shutil
 import sqlite3
+import subprocess
+import tempfile
 import threading
 import time
+import uuid
+import wave
+import math
+import struct
+from array import array
 from datetime import datetime, timezone
 
 import yaml
-from fastapi import FastAPI, Query
+from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -62,6 +70,9 @@ CAMERA = CONFIG.get("camera", {})
 HLS_DIR = CAMERA.get("hls_dir") or "/opt/rotor-meteo/data/hls"
 TIMELAPSE_DIR = CAMERA.get("timelapse_dir") or "/opt/rotor-meteo/data/timelapse"
 CAMERA_STALE_SEC = float(CONFIG.get("camera", {}).get("stale_sec", 20))
+SOUND_DIR = "/opt/rotor-meteo/data/sounds"
+SOUND_CONFIG_PATH = "/opt/rotor-meteo/data/sound_config.json"
+USB_AUDIO_DEVICE = "plughw:CARD=CD002,DEV=0"
 
 timelapse_lock = threading.Lock()
 timelapse_thread = None
@@ -276,6 +287,363 @@ def sample_before(points, seconds_ago):
     return candidate or points[0]
 
 
+
+os.makedirs(SOUND_DIR, exist_ok=True)
+
+
+def default_sound_config():
+    return {
+        "enabled": False,
+        "rules": [],
+    }
+
+
+def load_sound_config():
+    if not os.path.exists(SOUND_CONFIG_PATH):
+        return default_sound_config()
+    try:
+        with open(SOUND_CONFIG_PATH, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if not isinstance(data, dict):
+            return default_sound_config()
+        data.setdefault("enabled", False)
+        data.setdefault("rules", [])
+        return data
+    except Exception:
+        return default_sound_config()
+
+
+def save_sound_config(config):
+    with open(SOUND_CONFIG_PATH, "w", encoding="utf-8") as f:
+        json.dump(config, f, ensure_ascii=False, indent=2)
+
+
+def list_sound_files():
+    os.makedirs(SOUND_DIR, exist_ok=True)
+    items = []
+    for name in sorted(os.listdir(SOUND_DIR)):
+        path = os.path.join(SOUND_DIR, name)
+        if os.path.isfile(path):
+            items.append({
+                "name": name,
+                "size": os.path.getsize(path),
+            })
+    return items
+
+
+def build_chirp_file(path, base_hz=1200.0, span_hz=900.0, duration=0.9):
+    sample_rate = 22050
+    total = int(sample_rate * duration)
+    frames = bytearray()
+    for i in range(total):
+        t = i / sample_rate
+        env = math.sin(math.pi * min(1.0, t / duration)) ** 2
+        chirp = math.sin(2 * math.pi * (base_hz + span_hz * math.sin(2 * math.pi * 3.5 * t)) * t)
+        overtone = math.sin(2 * math.pi * (base_hz * 1.8 + span_hz * 0.15 * math.cos(2 * math.pi * 5.2 * t)) * t)
+        sample = (0.42 * chirp + 0.18 * overtone) * env
+        pcm = int(max(-1.0, min(1.0, sample)) * 32767)
+        frames.extend(struct.pack("<h", pcm))
+    with wave.open(path, "wb") as wavf:
+        wavf.setnchannels(1)
+        wavf.setsampwidth(2)
+        wavf.setframerate(sample_rate)
+        wavf.writeframes(bytes(frames))
+
+
+def build_chirp_pcm(base_hz=1200.0, span_hz=900.0, duration=0.9):
+    total = int(22050 * duration)
+    samples = array("h")
+    for i in range(total):
+        t = i / 22050
+        env = math.sin(math.pi * min(1.0, t / duration)) ** 2
+        chirp = math.sin(2 * math.pi * (base_hz + span_hz * math.sin(2 * math.pi * 3.5 * t)) * t)
+        overtone = math.sin(2 * math.pi * (base_hz * 1.8 + span_hz * 0.15 * math.cos(2 * math.pi * 5.2 * t)) * t)
+        sample = (0.42 * chirp + 0.18 * overtone) * env
+        pcm = int(max(-1.0, min(1.0, sample)) * 32767)
+        samples.append(pcm)
+        samples.append(pcm)
+    return samples
+
+class SoundEngine:
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.stop_event = threading.Event()
+        self.thread = None
+        self.audio_thread = None
+        self.player = None
+        self.rule_state = {}
+        self.global_enabled = False
+        self.sample_rate = 22050
+        self.channels = 2
+        self.chunk_frames = 2048
+        self.voices = []
+        self.decoded_cache = {}
+
+    def start(self):
+        if not self.thread or not self.thread.is_alive():
+            self.stop_event.clear()
+            self.thread = threading.Thread(target=self.run, daemon=True)
+            self.thread.start()
+        if not self.audio_thread or not self.audio_thread.is_alive():
+            self.audio_thread = threading.Thread(target=self.audio_loop, daemon=True)
+            self.audio_thread.start()
+
+    def stop(self):
+        self.stop_event.set()
+        self.stop_sound()
+        with self.lock:
+            self._stop_player_locked()
+
+    def status(self):
+        with self.lock:
+            names = [voice["name"] for voice in self.voices]
+            return {
+                "enabled": self.global_enabled,
+                "playing": bool(self.voices),
+                "current_rule_id": ",".join(sorted({str(voice.get("rule_id") or "") for voice in self.voices if voice.get("rule_id")})) or None,
+                "current_name": ", ".join(names) if names else None,
+                "current_loop": any(voice.get("loop") for voice in self.voices),
+                "voice_count": len(self.voices),
+            }
+
+    def set_enabled(self, enabled):
+        with self.lock:
+            self.global_enabled = bool(enabled)
+            if not self.global_enabled:
+                self.voices.clear()
+                self._stop_player_locked()
+
+    def _stop_player_locked(self):
+        if self.player:
+            try:
+                if self.player.stdin:
+                    self.player.stdin.close()
+            except Exception:
+                pass
+            try:
+                self.player.terminate()
+                self.player.wait(timeout=2)
+            except Exception:
+                try:
+                    self.player.kill()
+                except Exception:
+                    pass
+        self.player = None
+
+    def _ensure_player_locked(self):
+        if self.player and self.player.poll() is None:
+            return
+        self._stop_player_locked()
+        self.player = subprocess.Popen(
+            [
+                "aplay",
+                "-q",
+                "-D",
+                USB_AUDIO_DEVICE,
+                "-f",
+                "S16_LE",
+                "-c",
+                str(self.channels),
+                "-r",
+                str(self.sample_rate),
+                "-t",
+                "raw",
+            ],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+
+    def decode_file(self, path):
+        cached = self.decoded_cache.get(path)
+        if cached is not None:
+            return cached
+        if not os.path.exists(path):
+            raise FileNotFoundError(path)
+        proc = subprocess.run(
+            [
+                "ffmpeg",
+                "-loglevel",
+                "quiet",
+                "-i",
+                path,
+                "-f",
+                "s16le",
+                "-ac",
+                str(self.channels),
+                "-ar",
+                str(self.sample_rate),
+                "-",
+            ],
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        samples = array("h")
+        samples.frombytes(proc.stdout)
+        self.decoded_cache[path] = samples
+        return samples
+
+    def is_rule_playing(self, rule_id):
+        return any(voice.get("rule_id") == rule_id for voice in self.voices)
+
+    def stop_rule_sound(self, rule_id):
+        with self.lock:
+            self.voices = [voice for voice in self.voices if voice.get("rule_id") != rule_id]
+
+    def stop_sound(self):
+        with self.lock:
+            self.voices.clear()
+
+    def _queue_voice_locked(self, samples, loop, name, rule_id):
+        self.voices.append({
+            "samples": samples,
+            "position": 0,
+            "loop": loop,
+            "name": name,
+            "rule_id": rule_id,
+        })
+
+    def play_file(self, filename, loop=False, rule_id=None):
+        if filename == "__chirp__":
+            self.play_chirp(rule_id=rule_id)
+            return
+        path = os.path.join(SOUND_DIR, filename)
+        samples = self.decode_file(path)
+        with self.lock:
+            self._queue_voice_locked(samples, loop=loop, name=filename, rule_id=rule_id)
+
+    def play_chirp(self, rule_id="test"):
+        samples = build_chirp_pcm()
+        with self.lock:
+            self._queue_voice_locked(samples, loop=False, name="chirp", rule_id=rule_id)
+
+    def audio_loop(self):
+        silence = array("h", [0] * (self.chunk_frames * self.channels))
+        while not self.stop_event.wait(0.01):
+            with self.lock:
+                if not self.global_enabled:
+                    self._stop_player_locked()
+                    continue
+                if not self.voices:
+                    if self.player and self.player.poll() is None and self.player.stdin:
+                        try:
+                            self.player.stdin.write(silence.tobytes())
+                            self.player.stdin.flush()
+                        except Exception:
+                            self._stop_player_locked()
+                    else:
+                        self._ensure_player_locked()
+                    continue
+
+                self._ensure_player_locked()
+                mix = [0] * (self.chunk_frames * self.channels)
+                next_voices = []
+                for voice in self.voices:
+                    samples = voice["samples"]
+                    pos = voice["position"]
+                    for frame in range(self.chunk_frames):
+                        if pos >= len(samples):
+                            if voice["loop"]:
+                                pos = 0
+                            else:
+                                break
+                        for ch in range(self.channels):
+                            if pos + ch < len(samples):
+                                mix[frame * self.channels + ch] += samples[pos + ch]
+                        pos += self.channels
+                    if pos < len(samples) or voice["loop"]:
+                        voice["position"] = pos
+                        next_voices.append(voice)
+                self.voices = next_voices
+
+                out = array("h")
+                for value in mix:
+                    if value > 32767:
+                        value = 32767
+                    elif value < -32768:
+                        value = -32768
+                    out.append(int(value))
+                try:
+                    if self.player and self.player.stdin:
+                        self.player.stdin.write(out.tobytes())
+                        self.player.stdin.flush()
+                except Exception:
+                    self._stop_player_locked()
+
+    def run(self):
+        while not self.stop_event.wait(1.0):
+            config = load_sound_config()
+            self.set_enabled(config.get("enabled", False))
+            if not self.global_enabled:
+                continue
+            latest = get_latest_map()
+            rules = config.get("rules", [])
+            for rule in rules:
+                if not rule.get("enabled", True):
+                    self.stop_rule_sound(rule.get("id"))
+                    continue
+                metric_id = rule.get("metric_id")
+                device_id = rule.get("device_id")
+                sound_file = rule.get("sound_file")
+                if not metric_id or not sound_file:
+                    continue
+                item = get_metric(latest, metric_id, device_id)
+                if not item:
+                    continue
+                value = float(item["value"])
+                state = self.rule_state.setdefault(rule["id"], {
+                    "last_value": None,
+                    "active": False,
+                    "last_trigger_ts": 0.0,
+                })
+                min_value = rule.get("min_value")
+                max_value = rule.get("max_value")
+                min_delta = float(rule.get("min_delta") or 0.0)
+                cooldown = float(rule.get("cooldown_sec") or 10.0)
+                in_range = True
+                if min_value not in (None, ""):
+                    in_range = in_range and value >= float(min_value)
+                if max_value not in (None, ""):
+                    in_range = in_range and value <= float(max_value)
+                delta = None if state["last_value"] is None else abs(value - state["last_value"])
+                changed = state["last_value"] is None or delta >= min_delta
+                now = time.time()
+                mode = rule.get("mode", "once")
+                is_current = self.is_rule_playing(rule["id"])
+                is_chirp = sound_file == "__chirp__"
+                try_trigger = in_range and changed and (now - state["last_trigger_ts"] >= cooldown)
+
+                if mode == "loop" and not is_chirp:
+                    if in_range and not is_current:
+                        try:
+                            self.play_file(sound_file, loop=True, rule_id=rule["id"])
+                            state["last_trigger_ts"] = now
+                            state["active"] = True
+                        except Exception:
+                            pass
+                    elif not in_range and is_current:
+                        self.stop_rule_sound(rule["id"])
+                        state["active"] = False
+                    elif not in_range:
+                        state["active"] = False
+                else:
+                    if try_trigger and not state["active"]:
+                        try:
+                            self.play_file(sound_file, loop=False, rule_id=rule["id"])
+                            state["last_trigger_ts"] = now
+                            state["active"] = True
+                        except Exception:
+                            pass
+                    elif not in_range:
+                        state["active"] = False
+                    elif now - state["last_trigger_ts"] >= cooldown:
+                        state["active"] = False
+                state["last_value"] = value
+
+sound_engine = SoundEngine()
+
+
 def compute_forecast_payload():
     latest = get_latest_map()
     pressure = get_metric(latest, "pressure_hpa", "sensor_community_1")
@@ -462,6 +830,126 @@ def api_sign_latest():
     return compute_forecast_payload()
 
 
+@app.get("/api/sound/state")
+def api_sound_state():
+    config = load_sound_config()
+    latest = get_latest_map()
+    metrics = []
+    for item in sorted(latest.values(), key=lambda row: (row["device_id"], row["metric_id"])):
+        metrics.append({
+            "device_id": item["device_id"],
+            "metric_id": item["metric_id"],
+            "label": f"{item['device_id']} / {get_metric_name(item['metric_id'])}",
+            "value": item["value"],
+            "unit": get_metric_unit(item["metric_id"], item.get("unit")),
+        })
+    sounds = [{"name": "__chirp__", "size": 0, "label": "Chirp interno"}] + list_sound_files()
+    return {
+        "config": config,
+        "sounds": sounds,
+        "engine": sound_engine.status(),
+        "metrics": metrics,
+    }
+
+
+@app.post("/api/sound/global")
+def api_sound_global(enabled: bool = Form(...)):
+    config = load_sound_config()
+    config["enabled"] = bool(enabled)
+    save_sound_config(config)
+    sound_engine.set_enabled(enabled)
+    return {"ok": True, "config": config, "engine": sound_engine.status()}
+
+
+@app.post("/api/sound/stop")
+def api_sound_stop():
+    sound_engine.stop_sound()
+    return {"ok": True, "engine": sound_engine.status()}
+
+
+@app.post("/api/sound/test/chirp")
+def api_sound_test_chirp():
+    sound_engine.play_chirp()
+    return {"ok": True}
+
+
+@app.post("/api/sound/test/file")
+def api_sound_test_file(filename: str = Form(...), loop: bool = Form(False)):
+    try:
+        sound_engine.play_file(filename, loop=bool(loop), rule_id="manual")
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="Archivo no encontrado.")
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+    return {"ok": True}
+
+
+@app.post("/api/sound/upload")
+async def api_sound_upload(file: UploadFile = File(...)):
+    os.makedirs(SOUND_DIR, exist_ok=True)
+    original = file.filename or "sound.wav"
+    ext = os.path.splitext(original)[1].lower()
+    if ext not in {".wav", ".mp3", ".ogg"}:
+        raise HTTPException(status_code=400, detail="Formato no soportado. Usa wav, mp3 u ogg.")
+    safe_name = f"{uuid.uuid4().hex}{ext}"
+    path = os.path.join(SOUND_DIR, safe_name)
+    with open(path, "wb") as out:
+        shutil.copyfileobj(file.file, out)
+    return {"ok": True, "file": {"name": safe_name, "original": original}}
+
+
+@app.delete("/api/sound/files/{filename}")
+def api_sound_delete_file(filename: str):
+    if filename == "__chirp__":
+        raise HTTPException(status_code=400, detail="El chirp interno no se puede borrar.")
+    path = os.path.join(SOUND_DIR, filename)
+    if not os.path.exists(path):
+        raise HTTPException(status_code=404, detail="Archivo no encontrado.")
+    try:
+        os.remove(path)
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+    config = load_sound_config()
+    config["rules"] = [rule for rule in config.get("rules", []) if rule.get("sound_file") != filename]
+    save_sound_config(config)
+    return {"ok": True, "config": config}
+
+
+@app.post("/api/sound/rules")
+def api_sound_rules(payload: dict):
+    rules = payload.get("rules")
+    if not isinstance(rules, list):
+        raise HTTPException(status_code=400, detail="rules debe ser una lista")
+    normalized = []
+    for raw in rules:
+        rid = raw.get("id") or uuid.uuid4().hex
+        normalized.append({
+            "id": rid,
+            "name": str(raw.get("name") or rid),
+            "device_id": raw.get("device_id") or "",
+            "metric_id": raw.get("metric_id") or "",
+            "sound_file": raw.get("sound_file") or "",
+            "mode": raw.get("mode") or "once",
+            "min_value": raw.get("min_value"),
+            "max_value": raw.get("max_value"),
+            "min_delta": float(raw.get("min_delta") or 0.0),
+            "cooldown_sec": float(raw.get("cooldown_sec") or 10.0),
+            "enabled": bool(raw.get("enabled", True)),
+        })
+    config = load_sound_config()
+    config["rules"] = normalized
+    save_sound_config(config)
+    return {"ok": True, "config": config}
+
+
+@app.delete("/api/sound/rules/{rule_id}")
+def api_sound_delete_rule(rule_id: str):
+    config = load_sound_config()
+    config["rules"] = [rule for rule in config.get("rules", []) if rule.get("id") != rule_id]
+    save_sound_config(config)
+    return {"ok": True, "config": config}
+
+
 @app.get("/api/stream")
 def api_stream():
     async def event_stream():
@@ -541,6 +1029,11 @@ def api_timelapse_gif(interval_sec: float = Query(1.0)):
     if not name:
         return {"ok": False}
     return {"ok": True, "filename": name}
+
+
+@app.on_event("startup")
+def startup():
+    sound_engine.start()
 
 
 @app.get("/")
@@ -689,6 +1182,7 @@ def index():
     <div class=\"tab\" data-tab=\"air\">PM y Aire</div>
     <div class=\"tab\" data-tab=\"gps\">Posición</div>
     <div class=\"tab\" data-tab=\"camera\">Cámara</div>
+    <div class=\"tab\" data-tab=\"sound\">Sonido</div>
     <div class=\"tab\" data-tab=\"forecast\">Interpretación 24h</div>
   </div>
 
@@ -783,6 +1277,80 @@ def index():
       <iframe id=\"gpsMap\" class=\"gps-map\" loading=\"lazy\"></iframe>
     </div>
   </div>
+
+  <div id=\"sound\" class=\"panel\">
+    <h2>Sonido</h2>
+    <div class=\"card\">
+      <div class=\"timelapse-actions\">
+        <button onclick=\"toggleSoundGlobal(true)\">Play General</button>
+        <button onclick=\"toggleSoundGlobal(false)\">Stop General</button>
+        <button onclick=\"stopAllSound()\">Cortar Sonido</button>
+        <button onclick=\"playChirpTest()\">Probar Chirp</button>
+      </div>
+      <div id=\"soundEngineStatus\" style=\"margin-top:8px; opacity:0.85;\">Estado: --</div>
+    </div>
+
+    <div class=\"card\">
+      <h3>Subir sonido</h3>
+      <div class=\"timelapse-actions\">
+        <input id=\"soundUploadFile\" type=\"file\" accept=\".wav,.mp3,.ogg\" />
+        <button onclick=\"uploadSoundFile()\">Subir archivo</button>
+      </div>
+      <div id=\"soundUploadStatus\" style=\"margin-top:8px; opacity:0.85;\"></div>
+    </div>
+
+    <div class=\"card\">
+      <h3>Nueva regla</h3>
+      <div class=\"timelapse-controls\">
+        <label>Nombre: <input id=\"soundRuleName\" type=\"text\" value=\"Regla sonido\" /></label>
+        <label>Sensor:
+          <select id=\"soundMetricSelect\"></select>
+        </label>
+        <label>Sonido:
+          <select id=\"soundFileSelect\"></select>
+        </label>
+        <label>Modo:
+          <select id=\"soundModeSelect\">
+            <option value=\"once\">Una vez</option>
+            <option value=\"loop\">Loop</option>
+          </select>
+        </label>
+        <label>Min valor: <input id=\"soundMinValue\" type=\"number\" step=\"any\" /></label>
+        <label>Max valor: <input id=\"soundMaxValue\" type=\"number\" step=\"any\" /></label>
+        <label>Cambio mínimo: <input id=\"soundMinDelta\" type=\"number\" step=\"any\" value=\"1\" /></label>
+        <label>Cooldown (s): <input id=\"soundCooldown\" type=\"number\" step=\"1\" value=\"10\" /></label>
+        <button onclick=\"addSoundRule()\">Añadir regla</button>
+      </div>
+      <div style=\"margin-top:8px; opacity:0.85;\">Una regla se dispara cuando el sensor entra en rango y cambia al menos el valor indicado.</div>
+    </div>
+
+    <div class=\"card\">
+      <h3>Sonidos disponibles</h3>
+      <div id=\"soundFilesList\"></div>
+    </div>
+
+    <div class=\"card\">
+      <h3>Reglas activas</h3>
+      <div id=\"soundRulesList\"></div>
+    </div>
+
+    <div class=\"card\">
+      <h3>API de sonido</h3>
+      <div style=\"opacity:0.9;\">
+        <p>Esta pestaña usa una API simple para controlar sonidos, subir audios y asociarlos a sensores.</p>
+        <p><strong>GET</strong> <span class=\"mono\">/api/sound/state</span>: devuelve reglas, sonidos, motor y métricas disponibles.</p>
+        <p><strong>POST</strong> <span class=\"mono\">/api/sound/global</span>: activa o para el motor global de sonido.</p>
+        <p><strong>POST</strong> <span class=\"mono\">/api/sound/stop</span>: corta la reproducción actual.</p>
+        <p><strong>POST</strong> <span class=\"mono\">/api/sound/test/chirp</span>: lanza el chirp de prueba.</p>
+        <p><strong>POST</strong> <span class=\"mono\">/api/sound/test/file</span>: reproduce un archivo subido, en una vez o en loop.</p>
+        <p><strong>POST</strong> <span class=\"mono\">/api/sound/upload</span>: sube un <span class=\"mono\">wav</span>, <span class=\"mono\">mp3</span> u <span class=\"mono\">ogg</span>.</p>
+        <p><strong>POST</strong> <span class=\"mono\">/api/sound/rules</span>: guarda la lista completa de reglas.</p>
+        <p><strong>DELETE</strong> <span class=\"mono\">/api/sound/rules/&lt;id&gt;</span>: elimina una regla.</p>
+        <p>Las reglas usan: sensor, sonido, rango mínimo/máximo, cambio mínimo, cooldown y modo <span class=\"mono\">once</span> o <span class=\"mono\">loop</span>.</p>
+      </div>
+    </div>
+  </div>
+
   <div id=\"camera\" class=\"panel\">
     <h2>Cámara (Live)</h2>
     <div class=\"status-line\">Estado: <span id=\"cameraStatus\" class=\"dot offline\"></span><span id=\"cameraStatusText\">Offline</span></div>
@@ -1420,6 +1988,157 @@ async function renderForecast(data) {{
 }}
 
 
+
+    let soundState = null;
+
+    function metricOptionValue(item) {{
+      return `${{item.device_id}}|||${{item.metric_id}}`;
+    }}
+
+    function readSelectedMetric() {{
+      const raw = document.getElementById('soundMetricSelect')?.value || '';
+      const [device_id, metric_id] = raw.split('|||');
+      return {{ device_id: device_id || '', metric_id: metric_id || '' }};
+    }}
+
+    function renderSoundState(payload) {{
+      soundState = payload;
+      const engine = payload.engine || {{}};
+      const config = payload.config || {{}};
+      const metrics = payload.metrics || [];
+      const sounds = payload.sounds || [];
+      const rules = config.rules || [];
+
+      const status = document.getElementById('soundEngineStatus');
+      if (status) {{
+        status.textContent = `Estado: ${{engine.enabled ? 'activo' : 'parado'}} | reproduciendo: ${{engine.playing ? (engine.current_name || 'sí') : 'no'}}`;
+      }}
+
+      const metricSelect = document.getElementById('soundMetricSelect');
+      if (metricSelect) {{
+        const current = metricSelect.value;
+        metricSelect.innerHTML = metrics.map(item => `<option value="${{metricOptionValue(item)}}">${{item.label}} (${{item.value}} ${{item.unit || ''}})</option>`).join('');
+        if (current) metricSelect.value = current;
+      }}
+
+      const soundSelect = document.getElementById('soundFileSelect');
+      if (soundSelect) {{
+        const current = soundSelect.value;
+        soundSelect.innerHTML = sounds.map(item => `<option value="${{item.name}}">${{item.label || item.name}}</option>`).join('');
+        if (current) soundSelect.value = current;
+      }}
+
+      const filesList = document.getElementById('soundFilesList');
+      if (filesList) {{
+        filesList.innerHTML = sounds.length ? sounds.map(item => `
+          <div style="margin-bottom:10px;">
+            <strong>${{item.label || item.name}}</strong>${{item.size ? ` (${{item.size}} bytes)` : ''}}
+            <button onclick="playSoundFile('${{item.name}}')">Play</button>
+            ${{item.name === '__chirp__' ? '' : `<button onclick="playSoundFile('${{item.name}}', true)">Loop</button>`}}
+            ${{item.name === '__chirp__' ? '' : `<button onclick="deleteSoundFile('${{item.name}}')">Borrar</button>`}}
+          </div>
+        `).join('') : '<p>Sin sonidos subidos todavía.</p>';
+      }}
+
+      const rulesList = document.getElementById('soundRulesList');
+      if (rulesList) {{
+        rulesList.innerHTML = rules.length ? rules.map(rule => `
+          <div style="margin-bottom:12px; padding-bottom:12px; border-bottom:1px solid rgba(22,50,74,0.08);">
+            <strong>${{rule.name}}</strong><br>
+            Sensor: ${{rule.device_id}} / ${{rule.metric_id}}<br>
+            Sonido: ${{rule.sound_file}} | Modo: ${{rule.mode}}<br>
+            Rango: ${{rule.min_value ?? '--'}} a ${{rule.max_value ?? '--'}} | Cambio mínimo: ${{rule.min_delta}} | Cooldown: ${{rule.cooldown_sec}}s | ${{rule.enabled ? 'Activa' : 'Parada'}}<br>
+            <button onclick="removeSoundRule('${{rule.id}}')">Borrar</button>
+          </div>
+        `).join('') : '<p>Sin reglas configuradas.</p>';
+      }}
+    }}
+
+    async function loadSoundState() {{
+      const res = await fetch('/api/sound/state');
+      const data = await res.json();
+      renderSoundState(data);
+    }}
+
+    async function toggleSoundGlobal(enabled) {{
+      const form = new FormData();
+      form.append('enabled', enabled ? 'true' : 'false');
+      await fetch('/api/sound/global', {{ method: 'POST', body: form }});
+      await loadSoundState();
+    }}
+
+    async function stopAllSound() {{
+      await fetch('/api/sound/stop', {{ method: 'POST' }});
+      await loadSoundState();
+    }}
+
+    async function playChirpTest() {{
+      await fetch('/api/sound/test/chirp', {{ method: 'POST' }});
+      await loadSoundState();
+    }}
+
+    async function playSoundFile(filename, loop = false) {{
+      const form = new FormData();
+      form.append('filename', filename);
+      form.append('loop', loop ? 'true' : 'false');
+      await fetch('/api/sound/test/file', {{ method: 'POST', body: form }});
+      await loadSoundState();
+    }}
+
+    async function deleteSoundFile(filename) {{
+      if (!confirm(`¿Borrar sonido ${{filename}}? También se eliminarán sus reglas asociadas.`)) return;
+      await fetch(`/api/sound/files/${{encodeURIComponent(filename)}}`, {{ method: 'DELETE' }});
+      await loadSoundState();
+    }}
+
+    async function uploadSoundFile() {{
+      const input = document.getElementById('soundUploadFile');
+      const status = document.getElementById('soundUploadStatus');
+      if (!input || !input.files || !input.files[0]) {{
+        if (status) status.textContent = 'Selecciona primero un archivo.';
+        return;
+      }}
+      const form = new FormData();
+      form.append('file', input.files[0]);
+      if (status) status.textContent = 'Subiendo...';
+      const res = await fetch('/api/sound/upload', {{ method: 'POST', body: form }});
+      const data = await res.json();
+      if (status) status.textContent = data.ok ? `Subido: ${{data.file.original}}` : 'Error al subir';
+      input.value = '';
+      await loadSoundState();
+    }}
+
+    async function addSoundRule() {{
+      if (!soundState) await loadSoundState();
+      const metric = readSelectedMetric();
+      const nextRules = [ ...(soundState?.config?.rules || []) ];
+      nextRules.push({{
+        id: `rule_${{Date.now()}}`,
+        name: document.getElementById('soundRuleName')?.value || 'Regla sonido',
+        device_id: metric.device_id,
+        metric_id: metric.metric_id,
+        sound_file: document.getElementById('soundFileSelect')?.value || '',
+        mode: document.getElementById('soundModeSelect')?.value || 'once',
+        min_value: document.getElementById('soundMinValue')?.value || null,
+        max_value: document.getElementById('soundMaxValue')?.value || null,
+        min_delta: document.getElementById('soundMinDelta')?.value || 0,
+        cooldown_sec: document.getElementById('soundCooldown')?.value || 10,
+        enabled: true,
+      }});
+      await fetch('/api/sound/rules', {{
+        method: 'POST',
+        headers: {{ 'Content-Type': 'application/json' }},
+        body: JSON.stringify({{ rules: nextRules }}),
+      }});
+      await loadSoundState();
+    }}
+
+    async function removeSoundRule(ruleId) {{
+      await fetch(`/api/sound/rules/${{ruleId}}`, {{ method: 'DELETE' }});
+      await loadSoundState();
+    }}
+
+
     async function loadLatest() {{
       const res = await fetch('/api/latest');
       const data = await res.json();
@@ -1696,6 +2415,7 @@ async function renderForecast(data) {{
     renderGPS({{}});
     renderDashGps({{}});
     loadLatest();
+    loadSoundState();
     startVideo();
     loadTimelapseStatus();
     setupTimelapseScroll();
