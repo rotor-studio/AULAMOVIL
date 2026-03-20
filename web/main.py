@@ -1085,7 +1085,7 @@ def index():
     .panel {{ display: none; }}
     .panel.active {{ display: block; }}
     .panel > * {{ margin-bottom: 16px; }}
-    .grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px; }}
+    .grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 16px; align-items: stretch; }}
     .card {{
       border: 1px solid var(--card-border);
       border-radius: 12px;
@@ -1195,7 +1195,7 @@ def index():
       <div id=\"dashAir\" class=\"card\"></div>
       <div id=\"dashGps\" class=\"card\"></div>
       <div id=\"dashCam\" class=\"card\"></div>
-      <div id=\"dashForecast\" class=\"card card-wide forecast-card\"></div>
+      <div id=\"dashForecast\" class=\"card forecast-card\"></div>
     </div>
   </div>
 
@@ -1222,7 +1222,7 @@ def index():
   </div>
 
   <div id=\"bme\" class=\"panel\">
-    <h2>Temperatura / Humedad / Presión / Lux</h2>
+    <h2>Temperatura / Humedad / Presión / Lux / UV</h2>
     <div class=\"status-line\">Estado: <span id=\"bmeStatus\" class=\"dot offline\"></span><span id=\"bmeStatusText\">Offline</span></div>
     <table>
       <thead><tr><th>Métrica</th><th>Valor</th><th>Actualizado</th></tr></thead>
@@ -2156,6 +2156,8 @@ async function renderForecast(data) {{
       const rh = getMetric(data, 'rh_pct');
       const p = getMetric(data, 'pressure_hpa');
       const lux = getMetric(data, 'light_lux');
+      const uvRaw = getMetric(data, 'uv_raw');
+      const uvVoltage = getMetric(data, 'uv_voltage_v');
       const t2 = getMetric(data, 'temp_ground_c');
       const rh2 = getMetric(data, 'rh_ground_pct');
       setCard(document.getElementById('dashBme'), 'Temp / Humedad / Presión', [
@@ -2166,9 +2168,11 @@ async function renderForecast(data) {{
         ['Humedad suelo (sombra)', rh2 ? `${{rh2.value}} ${{metricUnit('rh_ground_pct', rh2.unit)}}` : '--']
       ], max_ts(t, rh, p, t2, rh2));
 
-      setCard(document.getElementById('dashLight'), 'Luminosidad', [
-        ['Nivel de luz', lux ? `${{lux.value}} ${{metricUnit('light_lux', lux.unit)}}` : '--']
-      ], max_ts(lux));
+      setCard(document.getElementById('dashLight'), 'Luminosidad / UV', [
+        ['Nivel de luz', lux ? `${{lux.value}} ${{metricUnit('light_lux', lux.unit)}}` : '--'],
+        ['UV Raw', uvRaw ? `${{uvRaw.value}} ${{metricUnit('uv_raw', uvRaw.unit)}}` : '--'],
+        ['Voltaje UV', uvVoltage ? `${{uvVoltage.value}} ${{metricUnit('uv_voltage_v', uvVoltage.unit)}}` : '--']
+      ], max_ts(lux, uvRaw, uvVoltage));
 
       const pm10 = getMetric(data, 'pm10_ugm3');
       const pm25 = getMetric(data, 'pm2_5_ugm3');
@@ -2181,7 +2185,13 @@ async function renderForecast(data) {{
       renderDashCam();
       await renderForecast(data);
 
-      const bmeTs = Math.max(latestTsByDevice(data, 'bme280_local'), latestTsByDevice(data, 'bme280_ground'), getMetric(data, 'light_lux') ? getMetric(data, 'light_lux').ts : 0);
+      const bmeTs = Math.max(
+        latestTsByDevice(data, 'bme280_local'),
+        latestTsByDevice(data, 'bme280_ground'),
+        lux ? lux.ts : 0,
+        uvRaw ? uvRaw.ts : 0,
+        uvVoltage ? uvVoltage.ts : 0
+      );
       setStatus('windStatus', latestTsByDevice(data, 'wind_esp8266'), STATUS_MAX_AGE_SEC.wind_esp8266);
       setStatus('rainStatus', latestTsByDevice(data, 'rain_node_mcu'), STATUS_MAX_AGE_SEC.rain_node_mcu);
       setStatus('bmeStatus', bmeTs, Math.max(STATUS_MAX_AGE_SEC.bme280_ground, STATUS_MAX_AGE_SEC.sensor_community_1));
@@ -2191,7 +2201,7 @@ async function renderForecast(data) {{
 
       renderWind(data);
       renderSimpleTable('rainBody', ['rain_tips_total','rain_mm_total','rain_mm_interval','rain_rate_mmh','rain_last_tip_ms','rain_since_last_tip_ms','rain_mm'], data);
-      renderSimpleTable('bmeBody', ['temp_c','rh_pct','pressure_hpa','light_lux','temp_ground_c','rh_ground_pct'], data);
+      renderSimpleTable('bmeBody', ['temp_c','rh_pct','pressure_hpa','light_lux','uv_raw','uv_voltage_v','temp_ground_c','rh_ground_pct'], data);
       renderSimpleTable('airBody', ['pm10_ugm3','pm2_5_ugm3'], data);
       renderSimpleTable('gpsBody', ['gps_lat','gps_lon','gps_alt'], data);
       renderGPS(data);

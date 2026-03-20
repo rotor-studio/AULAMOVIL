@@ -1,4 +1,4 @@
-# Device and metric registry for Rotor Meteo
+﻿# Device and metric registry for Rotor Meteo
 # Topic convention: rotor/meteo/<device_id>/<metric_id>
 
 devices:
@@ -46,6 +46,8 @@ devices:
       - wind_direction_ma
       - wind_direction_cardinal
       - light_lux
+      - uv_raw
+      - uv_voltage_v
       - wind_raw
       - wind_voltage_v
       - wind_current_ma
@@ -138,3 +140,9 @@ metrics:
   light_lux:
     name: Luminosidad
     unit: lux
+  uv_raw:
+    name: UV Raw
+    unit: adc
+  uv_voltage_v:
+    name: Voltaje UV
+    unit: V

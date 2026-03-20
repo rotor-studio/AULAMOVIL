@@ -1,4 +1,4 @@
-import json
+﻿import json
 import os
 import sqlite3
 import threading
@@ -187,6 +187,10 @@ class Collector:
                 "dir_raw": ("wind_direction_raw", None),
                 "direction_ma": ("wind_direction_ma", "mA"),
                 "lux": ("light_lux", "lux"),
+                "uv_raw": ("uv_raw", None),
+                "UV_RAW": ("uv_raw", None),
+                "uv_v": ("uv_voltage_v", "V"),
+                "UV_V": ("uv_voltage_v", "V"),
             }
             raw_json = json.dumps(payload, separators=(",", ":"))
             for k, (metric_id, unit) in mapping.items():
@@ -216,6 +220,10 @@ class Collector:
             "dir_raw": "wind_direction_raw",
             "direction_ma": "wind_direction_ma",
             "lux": "light_lux",
+            "uv_raw": "uv_raw",
+            "UV_RAW": "uv_raw",
+            "uv_v": "uv_voltage_v",
+            "UV_V": "uv_voltage_v",
         }
         metric_id = metric_map.get(metric_key)
         if metric_id:
