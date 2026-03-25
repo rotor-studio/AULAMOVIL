@@ -2,15 +2,16 @@
 
 ## Network Mode (Current)
 - Wi-Fi: ROTORLINK on wlan0
-- eth0 reserved for CCTV camera and provides DHCP on 192.168.50.0/24
-- Camera network DHCP range: 192.168.50.10 - 192.168.50.100
-- Pi on camera network: 192.168.50.1/24
+- eth0 reserved for the CCTV camera on a direct link with static addressing.
+- Pi on camera network: 192.168.50.2/24
+- Camera IP: 192.168.50.10/24
 
 ## Camera (RTSP + HLS)
 We convert RTSP to HLS locally with ffmpeg.
 - HLS playlist: /hls/stream.m3u8
 - Web UI uses HLS.js from /static/hls.min.js
 - RTSP URL configured in config/app.yaml
+- Hikvision camera management port: 8000
 - **Passwords are stored in /etc/rotor-meteo/secrets.yaml (not in git)**
 
 Example RTSP:

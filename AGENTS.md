@@ -3,10 +3,11 @@
 ## Current Operating Mode
 - No AP mode in use.
 - wlan0 connects to Wi-Fi network ROTORLINK.
-- eth0 reserved for CCTV camera and provides DHCP on 192.168.50.0/24.
-- Pi camera-network IP: 192.168.50.1.
+- eth0 reserved for the CCTV camera on a direct link with static addressing.
+- Pi camera-network IP: 192.168.50.2/24.
 
 ## Camera
+- Camera fixed IP: 192.168.50.10.
 - RTSP config in config/app.yaml.
 - Passwords stored in /etc/rotor-meteo/secrets.yaml (not in git).
 - HLS served at /hls/stream.m3u8.
@@ -15,7 +16,7 @@
 ## Services
 - mosquitto running locally.
 - rotor-collector, rotor-web, and rotor-camera enabled and running.
-- isc-dhcp-server provides camera DHCP on eth0.
+- No DHCP on eth0; the camera link uses static addressing.
 
 ## Repo Location
 - Project repo: /opt/rotor-meteo
