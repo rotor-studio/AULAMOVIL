@@ -73,7 +73,7 @@ def main():
             )
         except Exception:
             pass
-        time.sleep(10)
+        time.sleep(2)
 
 
 if __name__ == "__main__":

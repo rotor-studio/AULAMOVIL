@@ -1355,6 +1355,8 @@ def index():
     <h2>Cámara (Live)</h2>
     <div class=\"status-line\">Estado: <span id=\"cameraStatus\" class=\"dot offline\"></span><span id=\"cameraStatusText\">Offline</span></div>
     <video id=\"video\" controls autoplay muted playsinline></video>
+    <img id=\"cameraSnapshot\" alt=\"Vista actual de la camara\" style=\"display:none; width:100%; max-width:960px; background:#000; border-radius:12px; margin-top:8px;\" />
+    <p id=\"cameraFallbackText\" style=\"display:none; opacity:0.8;\">El navegador no ha arrancado el HLS; mostrando captura auto-actualizada.</p>
     <p>RTSP URL:</p>
     <div class=\"mono\">{rtsp}</div>
     <p>
@@ -2321,13 +2323,72 @@ async function renderForecast(data) {{
 
     function startVideo() {{
       const video = document.getElementById('video');
+      const snapshot = document.getElementById('cameraSnapshot');
+      const fallbackText = document.getElementById('cameraFallbackText');
       const src = '{hls}';
+      if (!video) return;
+      video.preload = 'auto';
+      let snapshotTimer = null;
+      const refreshSnapshot = () => {{
+        if (!snapshot) return;
+        snapshot.src = `/hls/latest.jpg?ts=${{Date.now()}}`;
+      }};
+      const enableSnapshotFallback = () => {{
+        if (snapshot) snapshot.style.display = 'block';
+        if (fallbackText) fallbackText.style.display = 'block';
+        refreshSnapshot();
+        if (!snapshotTimer) snapshotTimer = setInterval(refreshSnapshot, 1000);
+      }};
+      const disableSnapshotFallback = () => {{
+        if (snapshot) snapshot.style.display = 'none';
+        if (fallbackText) fallbackText.style.display = 'none';
+        if (snapshotTimer) {{
+          clearInterval(snapshotTimer);
+          snapshotTimer = null;
+        }}
+      }};
+      const tryPlay = () => {{
+        const p = video.play();
+        if (p && typeof p.catch === 'function') {{
+          p.catch(() => {{}});
+        }}
+      }};
+      const armFallback = () => setTimeout(() => {{
+        if (video.readyState < 2 || video.currentTime < 0.1) enableSnapshotFallback();
+      }}, 6000);
+      video.addEventListener('playing', disableSnapshotFallback);
+      video.addEventListener('loadeddata', disableSnapshotFallback);
+      enableSnapshotFallback();
       if (video.canPlayType('application/vnd.apple.mpegurl')) {{
         video.src = src;
+        video.addEventListener('loadedmetadata', tryPlay, {{ once: true }});
+        tryPlay();
+        armFallback();
       }} else if (window.Hls && Hls.isSupported()) {{
-        const hls = new Hls();
+        const hls = new Hls({{
+          maxLiveSyncPlaybackRate: 1.5,
+        }});
         hls.loadSource(src);
         hls.attachMedia(video);
+        hls.on(Hls.Events.MANIFEST_PARSED, () => {{
+          tryPlay();
+          armFallback();
+        }});
+        hls.on(Hls.Events.ERROR, (_, data) => {{
+          if (!data || !data.fatal) return;
+          if (data.type === Hls.ErrorTypes.NETWORK_ERROR) {{
+            hls.startLoad();
+            enableSnapshotFallback();
+          }} else if (data.type === Hls.ErrorTypes.MEDIA_ERROR) {{
+            hls.recoverMediaError();
+            enableSnapshotFallback();
+          }} else {{
+            hls.destroy();
+            enableSnapshotFallback();
+          }}
+        }});
+      }} else {{
+        enableSnapshotFallback();
       }}
     }}
 
