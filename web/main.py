@@ -15,7 +15,7 @@ from array import array
 from datetime import datetime, timezone
 
 import yaml
-from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -93,6 +93,22 @@ LABEL_OVERRIDES = {
 }
 
 app = FastAPI(title="Rotor Meteo")
+
+
+@app.middleware("http")
+async def disable_cache_for_dynamic_routes(request: Request, call_next):
+    response = await call_next(request)
+    path = request.url.path
+    if request.method == "GET" and not (
+        path.startswith("/static/")
+        or path.startswith("/hls/")
+        or path.startswith("/timelapse/")
+    ):
+        response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+        response.headers["Pragma"] = "no-cache"
+        response.headers["Expires"] = "0"
+    return response
+
 app.mount("/static", StaticFiles(directory="/opt/rotor-meteo/web/static"), name="static")
 app.mount("/hls", StaticFiles(directory=HLS_DIR), name="hls")
 app.mount("/timelapse", StaticFiles(directory=TIMELAPSE_DIR), name="timelapse")
@@ -652,7 +668,7 @@ def compute_forecast_payload():
     wind = get_metric(latest, "wind_speed_ms", "wind_esp8266")
     rain_rate = get_metric(latest, "rain_rate_mmh", "rain_node_mcu")
     rain_total = get_metric(latest, "rain_mm_total", "rain_node_mcu") or get_metric(latest, "rain_mm", "rain_node_mcu")
-    light = get_metric(latest, "light_lux", "wind_esp8266")
+    light = get_metric(latest, "light_lux", "light_mcu")
     pm10 = get_metric(latest, "pm10_ugm3", "sensor_community_1")
     pm25 = get_metric(latest, "pm2_5_ugm3", "sensor_community_1")
 
@@ -1410,6 +1426,7 @@ def index():
       rain_node_mcu: 300,
       bme280_ground: 300,
       sensor_community_1: 300,
+      light_mcu: 300,
       gps_usb_1: 180,
     }};
 
@@ -1490,8 +1507,10 @@ def index():
     }}
 
     function getMetric(data, id) {{
-      const key = Object.keys(data).find(k => data[k].metric_id === id);
-      return key ? data[key] : null;
+      const matches = Object.values(data).filter(v => v.metric_id === id);
+      if (!matches.length) return null;
+      matches.sort((a, b) => (b.ts || 0) - (a.ts || 0));
+      return matches[0];
     }}
 
     function getFreshMetric(data, id) {{
@@ -1529,11 +1548,11 @@ def index():
       return card;
     }}
 
-    function setCard(el, title, rows, ts) {{
+    function setCard(el, title, rows, ts, maxAgeSec = ONLINE_MAX_AGE_SEC) {{
       if (!el) return;
       const timeText = ts ? new Date(ts*1000).toLocaleString() : '';
       const rowsHtml = rows.map(r => `<div>${{r[0]}}: ${{r[1]}}</div>`).join('');
-      el.innerHTML = `<strong>${{dotHtml(ts)}} ${{title}}</strong>${{rowsHtml}}<div><small>${{timeText}}</small></div>`;
+      el.innerHTML = `<strong>${{dotHtml(ts, maxAgeSec)}} ${{title}}</strong>${{rowsHtml}}<div><small>${{timeText}}</small></div>`;
     }}
 
     function updateCameraThumb() {{
@@ -1863,7 +1882,7 @@ async function buildForecast(data) {{
   const wind = latestMetricById(data, 'wind_speed_ms', 'wind_esp8266');
   const rainRate = latestMetricById(data, 'rain_rate_mmh', 'rain_node_mcu');
   const rainTotal = latestMetricById(data, 'rain_mm_total', 'rain_node_mcu');
-  const light = latestMetricById(data, 'light_lux', 'wind_esp8266');
+  const light = latestMetricById(data, 'light_lux', 'light_mcu');
   const pm10 = latestMetricById(data, 'pm10_ugm3', 'sensor_community_1');
   const pm25 = latestMetricById(data, 'pm2_5_ugm3', 'sensor_community_1');
 
@@ -2170,11 +2189,17 @@ async function renderForecast(data) {{
         ['Humedad suelo (sombra)', rh2 ? `${{rh2.value}} ${{metricUnit('rh_ground_pct', rh2.unit)}}` : '--']
       ], max_ts(t, rh, p, t2, rh2));
 
+      const lightTs = Math.max(
+        latestTsByDevice(data, 'light_mcu'),
+        lux ? lux.ts : 0,
+        uvRaw ? uvRaw.ts : 0,
+        uvVoltage ? uvVoltage.ts : 0
+      );
       setCard(document.getElementById('dashLight'), 'Luminosidad / UV', [
         ['Nivel de luz', lux ? `${{lux.value}} ${{metricUnit('light_lux', lux.unit)}}` : '--'],
         ['UV Raw', uvRaw ? `${{uvRaw.value}} ${{metricUnit('uv_raw', uvRaw.unit)}}` : '--'],
         ['Voltaje UV', uvVoltage ? `${{uvVoltage.value}} ${{metricUnit('uv_voltage_v', uvVoltage.unit)}}` : '--']
-      ], max_ts(lux, uvRaw, uvVoltage));
+      ], lightTs, STATUS_MAX_AGE_SEC.light_mcu);
 
       const pm10 = getMetric(data, 'pm10_ugm3');
       const pm25 = getMetric(data, 'pm2_5_ugm3');
@@ -2188,15 +2213,14 @@ async function renderForecast(data) {{
       await renderForecast(data);
 
       const bmeTs = Math.max(
+        latestTsByDevice(data, 'sensor_community_1'),
         latestTsByDevice(data, 'bme280_local'),
         latestTsByDevice(data, 'bme280_ground'),
-        lux ? lux.ts : 0,
-        uvRaw ? uvRaw.ts : 0,
-        uvVoltage ? uvVoltage.ts : 0
+        latestTsByDevice(data, 'light_mcu')
       );
       setStatus('windStatus', latestTsByDevice(data, 'wind_esp8266'), STATUS_MAX_AGE_SEC.wind_esp8266);
       setStatus('rainStatus', latestTsByDevice(data, 'rain_node_mcu'), STATUS_MAX_AGE_SEC.rain_node_mcu);
-      setStatus('bmeStatus', bmeTs, Math.max(STATUS_MAX_AGE_SEC.bme280_ground, STATUS_MAX_AGE_SEC.sensor_community_1));
+      setStatus('bmeStatus', bmeTs, Math.max(STATUS_MAX_AGE_SEC.bme280_ground, STATUS_MAX_AGE_SEC.sensor_community_1, STATUS_MAX_AGE_SEC.light_mcu));
       const airTs = Math.max(latestTsByDevice(data, 'pm_sensor_1'), latestTsByDevice(data, 'sensor_community_1'));
       setStatus('airStatus', airTs, STATUS_MAX_AGE_SEC.sensor_community_1);
       setStatus('gpsStatus', latestTsByDevice(data, 'gps_usb_1'), STATUS_MAX_AGE_SEC.gps_usb_1);

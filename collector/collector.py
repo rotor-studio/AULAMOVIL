@@ -108,6 +108,7 @@ class Collector:
             client.subscribe("meteo/rain/#")
             client.subscribe("meteo/env/#")
             client.subscribe("meteo/light/#")
+            client.subscribe("meteo/light_uv/#")
             print(f"[collector] subscribed to {self.topic_prefix}/# and meteo/wind/#")
         else:
             print(f"[collector] mqtt connect failed rc={rc}")
@@ -186,11 +187,6 @@ class Collector:
                 "direction_raw": ("wind_direction_raw", None),
                 "dir_raw": ("wind_direction_raw", None),
                 "direction_ma": ("wind_direction_ma", "mA"),
-                "lux": ("light_lux", "lux"),
-                "uv_raw": ("uv_raw", None),
-                "UV_RAW": ("uv_raw", None),
-                "uv_v": ("uv_voltage_v", "V"),
-                "UV_V": ("uv_voltage_v", "V"),
             }
             raw_json = json.dumps(payload, separators=(",", ":"))
             for k, (metric_id, unit) in mapping.items():
@@ -219,11 +215,6 @@ class Collector:
             "direction_raw": "wind_direction_raw",
             "dir_raw": "wind_direction_raw",
             "direction_ma": "wind_direction_ma",
-            "lux": "light_lux",
-            "uv_raw": "uv_raw",
-            "UV_RAW": "uv_raw",
-            "uv_v": "uv_voltage_v",
-            "UV_V": "uv_voltage_v",
         }
         metric_id = metric_map.get(metric_key)
         if metric_id:
@@ -265,14 +256,51 @@ class Collector:
 
     def handle_light_payload(self, topic, payload):
         parts = topic.split("/")
-        if len(parts) < 3 or parts[2] != "lux":
+        if len(parts) < 3:
             return
+        device_id = "light_mcu"
+
+        if parts[2] == "json" and isinstance(payload, dict):
+            ts = parse_timestamp(payload.get("ts"))
+            mapping = {
+                "lux": ("light_lux", "lux"),
+                "uv_raw": ("uv_raw", None),
+                "UV_RAW": ("uv_raw", None),
+                "uv_v": ("uv_voltage_v", "V"),
+                "UV_V": ("uv_voltage_v", "V"),
+                "uv_voltage": ("uv_voltage_v", "V"),
+                "UV_VOLTAGE": ("uv_voltage_v", "V"),
+            }
+            raw_json = json.dumps(payload, separators=(",", ":"))
+            for key, (metric_id, unit) in mapping.items():
+                if key not in payload:
+                    continue
+                try:
+                    value = float(payload[key])
+                except Exception:
+                    continue
+                self.store(ts, device_id, metric_id, value, unit, raw_json)
+            return
+
+        metric_map = {
+            "lux": ("light_lux", "lux"),
+            "uv_raw": ("uv_raw", None),
+            "UV_RAW": ("uv_raw", None),
+            "uv_v": ("uv_voltage_v", "V"),
+            "UV_V": ("uv_voltage_v", "V"),
+            "uv_voltage": ("uv_voltage_v", "V"),
+            "UV_VOLTAGE": ("uv_voltage_v", "V"),
+        }
+        mapped = metric_map.get(parts[2])
+        if not mapped:
+            return
+        metric_id, unit = mapped
         try:
             value = float(payload)
         except Exception:
             return
         ts = time.time()
-        self.store(ts, "wind_esp8266", "light_lux", value, "lux", json.dumps({"value": value}, separators=(",", ":")))
+        self.store(ts, device_id, metric_id, value, unit, json.dumps({"value": value}, separators=(",", ":")))
 
     def handle_rain_payload(self, topic, payload):
         parts = topic.split("/")
@@ -337,7 +365,7 @@ class Collector:
                 self.handle_rain_payload(topic, payload)
             elif topic.startswith("meteo/env/"):
                 self.handle_env_payload(topic, payload)
-            elif topic.startswith("meteo/light/"):
+            elif topic.startswith("meteo/light/") or topic.startswith("meteo/light_uv/"):
                 self.handle_light_payload(topic, payload)
         except Exception as exc:
             print(f"[collector] error: {exc}")

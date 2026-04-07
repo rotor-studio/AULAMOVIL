@@ -45,12 +45,16 @@ devices:
       - wind_direction_raw
       - wind_direction_ma
       - wind_direction_cardinal
-      - light_lux
-      - uv_raw
-      - uv_voltage_v
       - wind_raw
       - wind_voltage_v
       - wind_current_ma
+  light_mcu:
+    name: Light MCU
+    location: mast
+    metrics:
+      - light_lux
+      - uv_raw
+      - uv_voltage_v
 
 metrics:
   temp_c:
