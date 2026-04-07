@@ -1,6 +1,7 @@
 ﻿import json
 import os
 import sqlite3
+import random
 import threading
 import time
 from datetime import datetime, timezone
@@ -42,6 +43,8 @@ def parse_timestamp(value):
 
 
 def init_db(conn):
+    conn.execute("PRAGMA journal_mode=WAL;")
+    conn.execute("PRAGMA busy_timeout=10000;")
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS readings (
@@ -88,7 +91,7 @@ class Collector:
         self.latest_lock = threading.Lock()
         self.db_lock = threading.Lock()
 
-        self.conn = sqlite3.connect(self.db_path, check_same_thread=False)
+        self.conn = sqlite3.connect(self.db_path, check_same_thread=False, timeout=10.0)
         init_db(self.conn)
 
         self.client = mqtt.Client()
@@ -114,21 +117,30 @@ class Collector:
             print(f"[collector] mqtt connect failed rc={rc}")
 
     def store(self, ts, device_id, metric_id, value, unit, raw_json):
-        with self.db_lock:
-            with self.conn:
-                self.conn.execute(
-                    "INSERT INTO readings (ts, device_id, metric_id, value, unit, raw_json) VALUES (?, ?, ?, ?, ?, ?)",
-                    (ts, device_id, metric_id, value, unit, raw_json),
-                )
-                self.conn.execute(
-                    """
-                    INSERT INTO latest (device_id, metric_id, ts, value, unit, raw_json)
-                    VALUES (?, ?, ?, ?, ?, ?)
-                    ON CONFLICT(device_id, metric_id)
-                    DO UPDATE SET ts=excluded.ts, value=excluded.value, unit=excluded.unit, raw_json=excluded.raw_json
-                    """,
-                    (device_id, metric_id, ts, value, unit, raw_json),
-                )
+        for attempt in range(6):
+            try:
+                with self.db_lock:
+                    with self.conn:
+                        self.conn.execute(
+                            "INSERT INTO readings (ts, device_id, metric_id, value, unit, raw_json) VALUES (?, ?, ?, ?, ?, ?)",
+                            (ts, device_id, metric_id, value, unit, raw_json),
+                        )
+                        self.conn.execute(
+                            """
+                            INSERT INTO latest (device_id, metric_id, ts, value, unit, raw_json)
+                            VALUES (?, ?, ?, ?, ?, ?)
+                            ON CONFLICT(device_id, metric_id)
+                            DO UPDATE SET ts=excluded.ts, value=excluded.value, unit=excluded.unit, raw_json=excluded.raw_json
+                            """,
+                            (device_id, metric_id, ts, value, unit, raw_json),
+                        )
+                break
+            except sqlite3.OperationalError as exc:
+                message = str(exc).lower()
+                if "locked" not in message or attempt == 5:
+                    raise
+                # Small jitter reduces repeated lock collisions across threads.
+                time.sleep(0.15 + random.random() * 0.1)
 
         with self.latest_lock:
             self.latest[(device_id, metric_id)] = {
@@ -495,6 +507,8 @@ class Collector:
                         emit("rh_pct", val, "pct")
                     elif key_upper in ("BME280_PRESSURE", "BMP280_PRESSURE", "PRESSURE"):
                         emit("pressure_hpa", val, "hPa")
+            except sqlite3.OperationalError as exc:
+                print(f"[collector] Sensor.Community sqlite error: {exc}", flush=True)
             except (URLError, HTTPError, TimeoutError, json.JSONDecodeError, ValueError) as exc:
                 print(f"[collector] Sensor.Community error: {exc}", flush=True)
             time.sleep(max(5, interval))

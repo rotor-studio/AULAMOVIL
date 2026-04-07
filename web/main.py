@@ -1425,7 +1425,7 @@ def index():
       wind_esp8266: 120,
       rain_node_mcu: 300,
       bme280_ground: 300,
-      sensor_community_1: 300,
+      sensor_community_1: 600,
       light_mcu: 300,
       gps_usb_1: 180,
     }};
