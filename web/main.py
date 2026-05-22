@@ -1,4 +1,4 @@
-﻿import asyncio
+import asyncio
 import json
 import os
 import shutil
@@ -72,7 +72,55 @@ TIMELAPSE_DIR = CAMERA.get("timelapse_dir") or "/opt/rotor-meteo/data/timelapse"
 CAMERA_STALE_SEC = float(CONFIG.get("camera", {}).get("stale_sec", 20))
 SOUND_DIR = "/opt/rotor-meteo/data/sounds"
 SOUND_CONFIG_PATH = "/opt/rotor-meteo/data/sound_config.json"
-USB_AUDIO_DEVICE = "plughw:CARD=CD002,DEV=0"
+DEFAULT_USB_AUDIO_DEVICE = "plughw:CARD=CD002,DEV=0"
+AUDIO_DEVICE_CANDIDATES = [
+    os.environ.get("ROTOR_AUDIO_DEVICE", "").strip(),
+    str(CONFIG.get("sound", {}).get("output_device") or "").strip(),
+    DEFAULT_USB_AUDIO_DEVICE,
+    "default",
+    "sysdefault",
+    "plughw:CARD=Headphones,DEV=0",
+]
+
+def can_open_audio_device(device):
+    if not device:
+        return False
+    try:
+        result = subprocess.run(
+            [
+                "aplay",
+                "-q",
+                "-D",
+                device,
+                "-f",
+                "S16_LE",
+                "-c",
+                "2",
+                "-r",
+                "22050",
+                "-d",
+                "1",
+                "/dev/zero",
+            ],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=2,
+            check=False,
+        )
+        return result.returncode == 0
+    except Exception:
+        return False
+
+def resolve_audio_device():
+    seen = set()
+    for device in AUDIO_DEVICE_CANDIDATES:
+        if not device or device in seen:
+            continue
+        seen.add(device)
+        if can_open_audio_device(device):
+            return device
+    return None
 
 timelapse_lock = threading.Lock()
 timelapse_thread = None
@@ -387,6 +435,7 @@ class SoundEngine:
         self.thread = None
         self.audio_thread = None
         self.player = None
+        self.player_device = None
         self.rule_state = {}
         self.global_enabled = False
         self.sample_rate = 22050
@@ -394,6 +443,7 @@ class SoundEngine:
         self.chunk_frames = 2048
         self.voices = []
         self.decoded_cache = {}
+        self.last_audio_error = None
 
     def start(self):
         if not self.thread or not self.thread.is_alive():
@@ -413,10 +463,16 @@ class SoundEngine:
     def status(self):
         with self.lock:
             names = [voice["name"] for voice in self.voices]
+            active_rule_ids = sorted({
+                str(voice.get("rule_id") or "")
+                for voice in self.voices
+                if voice.get("rule_id")
+            })
             return {
                 "enabled": self.global_enabled,
                 "playing": bool(self.voices),
-                "current_rule_id": ",".join(sorted({str(voice.get("rule_id") or "") for voice in self.voices if voice.get("rule_id")})) or None,
+                "current_rule_id": ",".join(active_rule_ids) or None,
+                "active_rule_ids": active_rule_ids,
                 "current_name": ", ".join(names) if names else None,
                 "current_loop": any(voice.get("loop") for voice in self.voices),
                 "voice_count": len(self.voices),
@@ -445,30 +501,44 @@ class SoundEngine:
                 except Exception:
                     pass
         self.player = None
+        self.player_device = None
 
     def _ensure_player_locked(self):
         if self.player and self.player.poll() is None:
-            return
+            return True
         self._stop_player_locked()
-        self.player = subprocess.Popen(
-            [
-                "aplay",
-                "-q",
-                "-D",
-                USB_AUDIO_DEVICE,
-                "-f",
-                "S16_LE",
-                "-c",
-                str(self.channels),
-                "-r",
-                str(self.sample_rate),
-                "-t",
-                "raw",
-            ],
-            stdin=subprocess.PIPE,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
+        device = resolve_audio_device()
+        if not device:
+            self.last_audio_error = "No audio output device available"
+            return False
+        try:
+            self.player = subprocess.Popen(
+                [
+                    "aplay",
+                    "-q",
+                    "-D",
+                    device,
+                    "-f",
+                    "S16_LE",
+                    "-c",
+                    str(self.channels),
+                    "-r",
+                    str(self.sample_rate),
+                    "-t",
+                    "raw",
+                ],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            self.player_device = device
+            self.last_audio_error = None
+            return True
+        except Exception as exc:
+            self.last_audio_error = f"Failed to start audio player on {device}: {exc}"
+            self.player = None
+            self.player_device = None
+            return False
 
     def decode_file(self, path):
         cached = self.decoded_cache.get(path)
@@ -535,24 +605,17 @@ class SoundEngine:
             self._queue_voice_locked(samples, loop=False, name="chirp", rule_id=rule_id)
 
     def audio_loop(self):
-        silence = array("h", [0] * (self.chunk_frames * self.channels))
         while not self.stop_event.wait(0.01):
             with self.lock:
                 if not self.global_enabled:
                     self._stop_player_locked()
                     continue
                 if not self.voices:
-                    if self.player and self.player.poll() is None and self.player.stdin:
-                        try:
-                            self.player.stdin.write(silence.tobytes())
-                            self.player.stdin.flush()
-                        except Exception:
-                            self._stop_player_locked()
-                    else:
-                        self._ensure_player_locked()
+                    self._stop_player_locked()
                     continue
 
-                self._ensure_player_locked()
+                if not self._ensure_player_locked():
+                    continue
                 mix = [0] * (self.chunk_frames * self.channels)
                 next_voices = []
                 for voice in self.voices:
@@ -2029,6 +2092,7 @@ async function renderForecast(data) {{
       const metrics = payload.metrics || [];
       const sounds = payload.sounds || [];
       const rules = config.rules || [];
+      const activeRuleIds = new Set((engine.active_rule_ids || []).map(String));
 
       const status = document.getElementById('soundEngineStatus');
       if (status) {{
@@ -2065,9 +2129,10 @@ async function renderForecast(data) {{
       if (rulesList) {{
         rulesList.innerHTML = rules.length ? rules.map(rule => `
           <div style="margin-bottom:12px; padding-bottom:12px; border-bottom:1px solid rgba(22,50,74,0.08);">
-            <strong>${{rule.name}}</strong><br>
+            <strong><span class="dot ${{activeRuleIds.has(String(rule.id)) ? 'online' : 'offline'}}"></span>${{rule.name}}</strong><br>
             Sensor: ${{rule.device_id}} / ${{rule.metric_id}}<br>
             Sonido: ${{rule.sound_file}} | Modo: ${{rule.mode}}<br>
+            Estado: ${{activeRuleIds.has(String(rule.id)) ? 'Disparando' : (rule.enabled ? 'En espera' : 'Parada')}}<br>
             Rango: ${{rule.min_value ?? '--'}} a ${{rule.max_value ?? '--'}} | Cambio mínimo: ${{rule.min_delta}} | Cooldown: ${{rule.cooldown_sec}}s | ${{rule.enabled ? 'Activa' : 'Parada'}}<br>
             <button onclick="removeSoundRule('${{rule.id}}')">Borrar</button>
           </div>
