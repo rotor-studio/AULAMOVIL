@@ -9,6 +9,7 @@
 - `rotor-web`: FastAPI + Uvicorn on port `8000`
 - `rotor-collector`: MQTT, GPS, Sensor.Community and SQLite ingestion
 - `rotor-camera`: RTSP to HLS bridge
+- `rotor-cloud-bridge`: optional sender from the Pi to MOVILCLOUD
 - Local SQLite DB:
   - `/opt/rotor-meteo/data/rotor.db`
 - Web-served HLS output:
@@ -31,6 +32,7 @@
   - `/etc/systemd/system/rotor-web.service`
   - `/etc/systemd/system/rotor-collector.service`
   - `/etc/systemd/system/rotor-camera.service`
+  - `/etc/systemd/system/rotor-cloud-bridge.service`
 
 ## Python Requirements
 - Installed from `requirements.txt`
@@ -95,6 +97,12 @@
 - `rotor-camera`
   - working dir: `/opt/rotor-meteo`
   - exec: `/opt/rotor-meteo/.venv/bin/python /opt/rotor-meteo/scripts/camera_hls.py`
+- `rotor-cloud-bridge`
+  - working dir: `/opt/rotor-meteo`
+  - exec: `/opt/rotor-meteo/.venv/bin/python /opt/rotor-meteo/scripts/cloud_bridge.py`
+  - reads local `http://127.0.0.1:8000/api/latest`
+  - reads latest camera frame from `/opt/rotor-meteo/data/hls/latest.jpg`
+  - posts to the external MOVILCLOUD receiver
 
 ## Enable On A New Pi
 1. Create user `aulamovil` if not present.
@@ -113,6 +121,54 @@
    - `data/timelapse`
 9. `systemctl daemon-reload`
 10. `systemctl enable --now rotor-web rotor-collector rotor-camera`
+
+## MOVILCLOUD Bridge
+- Purpose:
+  - keeps Aula Movil behaving as it already does
+  - adds a side-channel sender to an external PHP receiver
+- Current receiver target during local development:
+  - `http://127.0.0.1:18080/api/ingest.php`
+- Local development reachability model:
+  - the Windows PC runs `MOVILCLOUD` on `127.0.0.1:8080`
+  - a reverse SSH tunnel exposes that receiver inside the Pi as `127.0.0.1:18080`
+  - this avoids depending on Windows firewall changes
+- Receiver token expected by the local MOVILCLOUD instance:
+  - `5f2749200d6640328d7536c2e5b7e909`
+- Bridge defaults live in:
+  - `/opt/rotor-meteo/config/app.yaml`
+- Secrets or overrides should live in:
+  - `/etc/rotor-meteo/secrets.yaml`
+- Current bridge config keys:
+  - `cloud_bridge.enabled`
+  - `cloud_bridge.endpoint`
+  - `cloud_bridge.token`
+  - `cloud_bridge.interval_sec`
+  - `cloud_bridge.timeout_sec`
+  - `cloud_bridge.title`
+  - `cloud_bridge.subtitle`
+  - `cloud_bridge.frame_path`
+  - `cloud_bridge.include_frame`
+  - `cloud_bridge.metrics`
+- Current metric set sent to MOVILCLOUD:
+  - `sensor_community_1/temp_c`
+  - `sensor_community_1/rh_pct`
+  - `sensor_community_1/pressure_hpa`
+  - `wind_esp8266/wind_speed_ms`
+  - `rain_node_mcu/rain_mm_total`
+  - `light_mcu/light_lux`
+- Bridge behavior:
+  - sends JSON only
+  - includes `frame_base64` when the latest frame file has changed
+  - does not modify `rotor-web`, `rotor-camera` or `rotor-collector`
+  - failure to reach MOVILCLOUD must not affect the core local stack
+- Service install:
+  - copy `scripts/systemd/rotor-cloud-bridge.service` to `/etc/systemd/system/`
+  - `systemctl daemon-reload`
+  - `systemctl enable --now rotor-cloud-bridge`
+- Validation:
+  - `systemctl status rotor-cloud-bridge`
+  - `journalctl -u rotor-cloud-bridge -f`
+  - verify `http://<pc-ip>:8080/api/state.php`
 
 ## Audio
 - Current USB speaker detected by ALSA as:

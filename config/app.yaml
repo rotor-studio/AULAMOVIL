@@ -25,3 +25,38 @@ sensor_community:
   url: http://192.168.0.171/data.json
   interval_sec: 60
   device_id: sensor_community_1
+cloud_bridge:
+  enabled: false
+  endpoint: http://127.0.0.1:18080/api/ingest.php
+  token: ""
+  interval_sec: 12
+  timeout_sec: 8
+  title: MOVIL CLOUD
+  subtitle: Aula Movil en directo
+  frame_path: /opt/rotor-meteo/data/hls/latest.jpg
+  include_frame: true
+  metrics:
+    - source: sensor_community_1/temp_c
+      label: Temperatura
+      decimals: 1
+      unit: C
+    - source: sensor_community_1/rh_pct
+      label: Humedad
+      decimals: 0
+      unit: "%"
+    - source: sensor_community_1/pressure_hpa
+      label: Presion
+      decimals: 0
+      unit: hPa
+    - source: wind_esp8266/wind_speed_ms
+      label: Viento
+      decimals: 1
+      unit: m/s
+    - source: rain_node_mcu/rain_mm_total
+      label: Lluvia
+      decimals: 1
+      unit: mm
+    - source: light_mcu/light_lux
+      label: Luz
+      decimals: 0
+      unit: lux

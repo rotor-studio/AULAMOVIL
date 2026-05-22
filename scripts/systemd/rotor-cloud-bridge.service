@@ -1,0 +1,16 @@
+[Unit]
+Description=Rotor Cloud Bridge
+After=network.target rotor-web.service rotor-camera.service
+Wants=rotor-web.service rotor-camera.service
+
+[Service]
+Type=simple
+User=aulamovil
+WorkingDirectory=/opt/rotor-meteo
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/opt/rotor-meteo/.venv/bin/python /opt/rotor-meteo/scripts/cloud_bridge.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
