@@ -18,6 +18,11 @@ $nextState = [
     'location' => (string) ($payload['location'] ?? $currentState['location'] ?? ''),
     'updated_at' => gmdate('c'),
     'metrics' => normalize_metrics($payload['metrics'] ?? []),
+    'display' => [
+        'headline' => (string) (($payload['display']['headline'] ?? $payload['headline'] ?? $currentState['display']['headline'] ?? '')),
+        'line1' => (string) (($payload['display']['line1'] ?? $payload['line1'] ?? $currentState['display']['line1'] ?? '')),
+        'line2' => (string) (($payload['display']['line2'] ?? $payload['line2'] ?? $currentState['display']['line2'] ?? '')),
+    ],
     'camera' => [
         'has_frame' => is_file(latest_frame_path()),
     ],

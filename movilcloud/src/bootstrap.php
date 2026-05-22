@@ -162,6 +162,10 @@ function ingest_payload(): array
         'subtitle' => $_POST['subtitle'] ?? $jsonBody['subtitle'] ?? null,
         'location' => $_POST['location'] ?? $jsonBody['location'] ?? null,
         'metrics' => is_array($directMetrics) ? $directMetrics : [],
+        'display' => is_array($_POST['display'] ?? $jsonBody['display'] ?? null) ? ($_POST['display'] ?? $jsonBody['display']) : null,
+        'headline' => $_POST['headline'] ?? $jsonBody['headline'] ?? null,
+        'line1' => $_POST['line1'] ?? $jsonBody['line1'] ?? null,
+        'line2' => $_POST['line2'] ?? $jsonBody['line2'] ?? null,
     ];
 }
 
