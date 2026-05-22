@@ -73,14 +73,7 @@ CAMERA_STALE_SEC = float(CONFIG.get("camera", {}).get("stale_sec", 20))
 SOUND_DIR = "/opt/rotor-meteo/data/sounds"
 SOUND_CONFIG_PATH = "/opt/rotor-meteo/data/sound_config.json"
 DEFAULT_USB_AUDIO_DEVICE = "plughw:CARD=CD002,DEV=0"
-AUDIO_DEVICE_CANDIDATES = [
-    os.environ.get("ROTOR_AUDIO_DEVICE", "").strip(),
-    str(CONFIG.get("sound", {}).get("output_device") or "").strip(),
-    DEFAULT_USB_AUDIO_DEVICE,
-    "default",
-    "sysdefault",
-    "plughw:CARD=Headphones,DEV=0",
-]
+DEFAULT_JACK_AUDIO_DEVICE = "plughw:CARD=Headphones,DEV=0"
 
 def can_open_audio_device(device):
     if not device:
@@ -113,8 +106,16 @@ def can_open_audio_device(device):
         return False
 
 def resolve_audio_device():
+    audio_device_candidates = [
+        os.environ.get("ROTOR_AUDIO_DEVICE", "").strip(),
+        configured_output_device(),
+        DEFAULT_USB_AUDIO_DEVICE,
+        "default",
+        "sysdefault",
+        DEFAULT_JACK_AUDIO_DEVICE,
+    ]
     seen = set()
-    for device in AUDIO_DEVICE_CANDIDATES:
+    for device in audio_device_candidates:
         if not device or device in seen:
             continue
         seen.add(device)
@@ -358,6 +359,7 @@ os.makedirs(SOUND_DIR, exist_ok=True)
 def default_sound_config():
     return {
         "enabled": False,
+        "output_device": DEFAULT_USB_AUDIO_DEVICE,
         "rules": [],
     }
 
@@ -371,6 +373,7 @@ def load_sound_config():
         if not isinstance(data, dict):
             return default_sound_config()
         data.setdefault("enabled", False)
+        data.setdefault("output_device", DEFAULT_USB_AUDIO_DEVICE)
         data.setdefault("rules", [])
         return data
     except Exception:
@@ -380,6 +383,11 @@ def load_sound_config():
 def save_sound_config(config):
     with open(SOUND_CONFIG_PATH, "w", encoding="utf-8") as f:
         json.dump(config, f, ensure_ascii=False, indent=2)
+
+
+def configured_output_device():
+    config = load_sound_config()
+    return str(config.get("output_device") or "").strip()
 
 
 def list_sound_files():
@@ -606,6 +614,8 @@ class SoundEngine:
 
     def audio_loop(self):
         while not self.stop_event.wait(0.01):
+            player = None
+            payload = None
             with self.lock:
                 if not self.global_enabled:
                     self._stop_player_locked()
@@ -643,12 +653,17 @@ class SoundEngine:
                     elif value < -32768:
                         value = -32768
                     out.append(int(value))
+                if self.player and self.player.stdin:
+                    player = self.player
+                    payload = out.tobytes()
+            if player and payload:
                 try:
-                    if self.player and self.player.stdin:
-                        self.player.stdin.write(out.tobytes())
-                        self.player.stdin.flush()
+                    player.stdin.write(payload)
+                    player.stdin.flush()
                 except Exception:
-                    self._stop_player_locked()
+                    with self.lock:
+                        if self.player is player:
+                            self._stop_player_locked()
 
     def run(self):
         while not self.stop_event.wait(1.0):
@@ -927,6 +942,10 @@ def api_sound_state():
         "config": config,
         "sounds": sounds,
         "engine": sound_engine.status(),
+        "outputs": {
+            "usb": DEFAULT_USB_AUDIO_DEVICE,
+            "jack": DEFAULT_JACK_AUDIO_DEVICE,
+        },
         "metrics": metrics,
     }
 
@@ -937,6 +956,23 @@ def api_sound_global(enabled: bool = Form(...)):
     config["enabled"] = bool(enabled)
     save_sound_config(config)
     sound_engine.set_enabled(enabled)
+    return {"ok": True, "config": config, "engine": sound_engine.status()}
+
+
+@app.post("/api/sound/output")
+def api_sound_output(device: str = Form(...)):
+    device = str(device or "").strip().lower()
+    outputs = {
+        "usb": DEFAULT_USB_AUDIO_DEVICE,
+        "jack": DEFAULT_JACK_AUDIO_DEVICE,
+    }
+    if device not in outputs:
+        raise HTTPException(status_code=400, detail="Salida no soportada.")
+    config = load_sound_config()
+    config["output_device"] = outputs[device]
+    save_sound_config(config)
+    sound_engine.stop_sound()
+    sound_engine._stop_player_locked()
     return {"ok": True, "config": config, "engine": sound_engine.status()}
 
 
@@ -1365,6 +1401,12 @@ def index():
         <button onclick=\"toggleSoundGlobal(false)\">Stop General</button>
         <button onclick=\"stopAllSound()\">Cortar Sonido</button>
         <button onclick=\"playChirpTest()\">Probar Chirp</button>
+      </div>
+      <div class=\"timelapse-actions\" style=\"margin-top:8px;\">
+        <button onclick=\"setSoundOutput('usb')\">Salida USB</button>
+        <span id=\"soundOutputUsbStatus\" class=\"dot offline\"></span>
+        <button onclick=\"setSoundOutput('jack')\">Salida Jack</button>
+        <span id=\"soundOutputJackStatus\" class=\"dot offline\"></span>
       </div>
       <div id=\"soundEngineStatus\" style=\"margin-top:8px; opacity:0.85;\">Estado: --</div>
     </div>
@@ -2093,10 +2135,26 @@ async function renderForecast(data) {{
       const sounds = payload.sounds || [];
       const rules = config.rules || [];
       const activeRuleIds = new Set((engine.active_rule_ids || []).map(String));
+      const outputDevice = config.output_device || '';
+      const outputLabel = outputDevice.includes('CD002') ? 'USB' : (outputDevice.includes('Headphones') ? 'Jack' : (outputDevice || '--'));
+      const usbActive = outputDevice.includes('CD002');
+      const jackActive = outputDevice.includes('Headphones');
 
       const status = document.getElementById('soundEngineStatus');
       if (status) {{
-        status.textContent = `Estado: ${{engine.enabled ? 'activo' : 'parado'}} | reproduciendo: ${{engine.playing ? (engine.current_name || 'sí') : 'no'}}`;
+        status.textContent = `Estado: ${{engine.enabled ? 'activo' : 'parado'}} | salida: ${{outputLabel}} | reproduciendo: ${{engine.playing ? (engine.current_name || 'sí') : 'no'}}`;
+      }}
+
+      const usbStatus = document.getElementById('soundOutputUsbStatus');
+      if (usbStatus) {{
+        usbStatus.classList.toggle('online', usbActive);
+        usbStatus.classList.toggle('offline', !usbActive);
+      }}
+
+      const jackStatus = document.getElementById('soundOutputJackStatus');
+      if (jackStatus) {{
+        jackStatus.classList.toggle('online', jackActive);
+        jackStatus.classList.toggle('offline', !jackActive);
       }}
 
       const metricSelect = document.getElementById('soundMetricSelect');
@@ -2150,6 +2208,13 @@ async function renderForecast(data) {{
       const form = new FormData();
       form.append('enabled', enabled ? 'true' : 'false');
       await fetch('/api/sound/global', {{ method: 'POST', body: form }});
+      await loadSoundState();
+    }}
+
+    async function setSoundOutput(device) {{
+      const form = new FormData();
+      form.append('device', device);
+      await fetch('/api/sound/output', {{ method: 'POST', body: form }});
       await loadSoundState();
     }}
 
