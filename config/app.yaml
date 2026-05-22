@@ -45,11 +45,11 @@ cloud_bridge:
       decimals: 1
       unit: m/s
     - source: light_mcu/light_lux
-      label: Lux
+      label: Luminosidad
       decimals: 0
       unit: lux
     - source: light_mcu/uv_voltage_v
-      label: V
+      label: Radiacion UV
       decimals: 2
       unit: V
     - source: rain_node_mcu/rain_mm_total

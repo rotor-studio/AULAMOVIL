@@ -19,8 +19,8 @@ DEFAULT_SUBTITLE = "Aula Movil en directo"
 DEFAULT_METRICS = [
     {"source": "wind_esp8266/wind_direction_deg", "label": "Direccion", "decimals": 0, "unit": "deg"},
     {"source": "wind_esp8266/wind_speed_ms", "label": "Velocidad", "decimals": 1, "unit": "m/s"},
-    {"source": "light_mcu/light_lux", "label": "Lux", "decimals": 0, "unit": "lux"},
-    {"source": "light_mcu/uv_voltage_v", "label": "V", "decimals": 2, "unit": "V"},
+    {"source": "light_mcu/light_lux", "label": "Luminosidad", "decimals": 0, "unit": "lux"},
+    {"source": "light_mcu/uv_voltage_v", "label": "Radiacion UV", "decimals": 2, "unit": "V"},
     {"source": "rain_node_mcu/rain_mm_total", "label": "Lluvia", "decimals": 1, "unit": "mm"},
     {"source": "sensor_community_1/temp_c", "label": "Temp", "decimals": 1, "unit": "C"},
     {"source": "sensor_community_1/rh_pct", "label": "Humedad", "decimals": 0, "unit": "%"},
