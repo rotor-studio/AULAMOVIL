@@ -10,18 +10,25 @@ import yaml
 
 
 LATEST_URL = "http://127.0.0.1:8000/api/latest"
+SIGN_URL = "http://127.0.0.1:8000/api/sign/latest"
 DEFAULT_FRAME_PATH = "/opt/rotor-meteo/data/hls/latest.jpg"
 DEFAULT_INTERVAL_SEC = 12
 DEFAULT_TIMEOUT_SEC = 8
 DEFAULT_TITLE = "MOVIL CLOUD"
 DEFAULT_SUBTITLE = "Aula Movil en directo"
 DEFAULT_METRICS = [
-    {"source": "sensor_community_1/temp_c", "label": "Temperatura", "decimals": 1, "unit": "C"},
-    {"source": "sensor_community_1/rh_pct", "label": "Humedad", "decimals": 0, "unit": "%"},
-    {"source": "sensor_community_1/pressure_hpa", "label": "Presion", "decimals": 0, "unit": "hPa"},
-    {"source": "wind_esp8266/wind_speed_ms", "label": "Viento", "decimals": 1, "unit": "m/s"},
+    {"source": "wind_esp8266/wind_direction_deg", "label": "Direccion", "decimals": 0, "unit": "deg"},
+    {"source": "wind_esp8266/wind_speed_ms", "label": "Velocidad", "decimals": 1, "unit": "m/s"},
+    {"source": "light_mcu/light_lux", "label": "Lux", "decimals": 0, "unit": "lux"},
+    {"source": "light_mcu/uv_voltage_v", "label": "V", "decimals": 2, "unit": "V"},
     {"source": "rain_node_mcu/rain_mm_total", "label": "Lluvia", "decimals": 1, "unit": "mm"},
-    {"source": "light_mcu/light_lux", "label": "Luz", "decimals": 0, "unit": "lux"},
+    {"source": "sensor_community_1/temp_c", "label": "Temp", "decimals": 1, "unit": "C"},
+    {"source": "sensor_community_1/rh_pct", "label": "Humedad", "decimals": 0, "unit": "%"},
+    {"source": "bme280_ground/temp_ground_c", "label": "Temp suelo", "decimals": 1, "unit": "C"},
+    {"source": "bme280_ground/rh_ground_pct", "label": "Hum suelo", "decimals": 0, "unit": "%"},
+    {"source": "sensor_community_1/pm2_5_ugm3", "label": "PM2.5", "decimals": 1, "unit": "ug/m3"},
+    {"source": "sensor_community_1/pm10_ugm3", "label": "PM10", "decimals": 1, "unit": "ug/m3"},
+    {"label": "Voltaje", "static_value": 12.4, "decimals": 1, "unit": "V"},
 ]
 
 
@@ -48,9 +55,17 @@ def load_config():
     return merge_dict(base, secrets)
 
 
-def fetch_latest_map(timeout_sec):
-    with urllib.request.urlopen(LATEST_URL, timeout=timeout_sec) as response:
+def fetch_json(url, timeout_sec):
+    with urllib.request.urlopen(url, timeout=timeout_sec) as response:
         return json.load(response)
+
+
+def fetch_latest_map(timeout_sec):
+    return fetch_json(LATEST_URL, timeout_sec)
+
+
+def fetch_sign_state(timeout_sec):
+    return fetch_json(SIGN_URL, timeout_sec)
 
 
 def coerce_number(value):
@@ -75,6 +90,17 @@ def build_metrics(latest_map, specs):
     metrics = []
     for spec in specs:
         source = str(spec.get("source", "")).strip()
+        if "static_value" in spec:
+            metrics.append(
+                {
+                    "label": str(spec.get("label") or "Dato"),
+                    "value": format_metric_value(spec.get("static_value"), int(spec.get("decimals", 1))),
+                    "unit": str(spec.get("unit") or ""),
+                    "device": str(spec.get("device") or "aulamovil"),
+                    "metric_id": str(spec.get("metric_id") or "simulated"),
+                }
+            )
+            continue
         if not source:
             continue
         row = latest_map.get(source)
@@ -111,7 +137,18 @@ def read_frame_base64(frame_path):
     return encoded, stat.st_mtime
 
 
-def build_payload(config, latest_map, last_frame_mtime):
+def build_display(sign_state):
+    display = sign_state.get("display") if isinstance(sign_state, dict) else {}
+    if not isinstance(display, dict):
+        display = {}
+    return {
+        "headline": str(display.get("headline") or ""),
+        "line1": str(display.get("line1") or ""),
+        "line2": str(display.get("line2") or ""),
+    }
+
+
+def build_payload(config, latest_map, sign_state, last_frame_mtime):
     bridge = config.get("cloud_bridge", {})
     specs = bridge.get("metrics") or DEFAULT_METRICS
     frame_path = str(bridge.get("frame_path") or DEFAULT_FRAME_PATH)
@@ -131,6 +168,7 @@ def build_payload(config, latest_map, last_frame_mtime):
         "subtitle": str(bridge.get("subtitle") or DEFAULT_SUBTITLE),
         "location": build_location(latest_map),
         "metrics": build_metrics(latest_map, specs),
+        "display": build_display(sign_state),
         "frame_base64": frame_base64,
         "source_ts": datetime.now(timezone.utc).isoformat(),
     }, frame_mtime
@@ -177,7 +215,8 @@ def main():
 
         try:
             latest_map = fetch_latest_map(timeout_sec)
-            payload, last_frame_mtime = build_payload(config, latest_map, last_frame_mtime)
+            sign_state = fetch_sign_state(timeout_sec)
+            payload, last_frame_mtime = build_payload(config, latest_map, sign_state, last_frame_mtime)
             response_text = post_payload(endpoint, timeout_sec, payload)
             print(f"[cloud_bridge] ok metrics={len(payload['metrics'])} frame={'yes' if payload.get('frame_base64') else 'no'} response={response_text[:140]}")
         except urllib.error.HTTPError as exc:

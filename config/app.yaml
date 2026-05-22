@@ -36,27 +36,51 @@ cloud_bridge:
   frame_path: /opt/rotor-meteo/data/hls/latest.jpg
   include_frame: true
   metrics:
+    - source: wind_esp8266/wind_direction_deg
+      label: Direccion
+      decimals: 0
+      unit: deg
+    - source: wind_esp8266/wind_speed_ms
+      label: Velocidad
+      decimals: 1
+      unit: m/s
+    - source: light_mcu/light_lux
+      label: Lux
+      decimals: 0
+      unit: lux
+    - source: light_mcu/uv_voltage_v
+      label: V
+      decimals: 2
+      unit: V
+    - source: rain_node_mcu/rain_mm_total
+      label: Lluvia
+      decimals: 1
+      unit: mm
     - source: sensor_community_1/temp_c
-      label: Temperatura
+      label: Temp
       decimals: 1
       unit: C
     - source: sensor_community_1/rh_pct
       label: Humedad
       decimals: 0
       unit: "%"
-    - source: sensor_community_1/pressure_hpa
-      label: Presion
-      decimals: 0
-      unit: hPa
-    - source: wind_esp8266/wind_speed_ms
-      label: Viento
+    - source: bme280_ground/temp_ground_c
+      label: Temp suelo
       decimals: 1
-      unit: m/s
-    - source: rain_node_mcu/rain_mm_total
-      label: Lluvia
-      decimals: 1
-      unit: mm
-    - source: light_mcu/light_lux
-      label: Luz
+      unit: C
+    - source: bme280_ground/rh_ground_pct
+      label: Hum suelo
       decimals: 0
-      unit: lux
+      unit: "%"
+    - source: sensor_community_1/pm2_5_ugm3
+      label: PM2.5
+      decimals: 1
+      unit: ug/m3
+    - source: sensor_community_1/pm10_ugm3
+      label: PM10
+      decimals: 1
+      unit: ug/m3
+    - label: Voltaje
+      static_value: 12.4
+      decimals: 1
+      unit: V
