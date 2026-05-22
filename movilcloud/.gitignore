@@ -1,0 +1,4 @@
+storage/latest_frame.jpg
+storage/latest_state.json
+storage/frames/*
+!storage/frames/.gitkeep

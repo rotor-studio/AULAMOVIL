@@ -19,6 +19,17 @@
 - Timelapse output:
   - `/opt/rotor-meteo/data/timelapse`
 
+## MOVILCLOUD App In Repo
+- Branch `movilcloud-site` also contains a PHP receiver app in `/movilcloud`
+- Main files:
+  - `/movilcloud/public/index.php`
+  - `/movilcloud/public/api/ingest.php`
+  - `/movilcloud/public/api/state.php`
+  - `/movilcloud/public/api/frame.php`
+- The committed app is template-safe:
+  - runtime `storage/` contents are not committed
+  - `config/config.php` keeps a placeholder token and must be edited per deployment
+
 ## Required Layout On A New Pi
 - Linux user:
   - `aulamovil`
