@@ -4,6 +4,8 @@
 - This repo runs a local weather station stack on a Raspberry Pi.
 - Main repo path on the Pi: `/opt/rotor-meteo`
 - Main host in the current deployment: `AULAMOVIL`
+- Rebuild reference:
+  - `docs/rebuild.md`
 
 ## Runtime Topology
 - `rotor-web`: FastAPI + Uvicorn on port `8000`
