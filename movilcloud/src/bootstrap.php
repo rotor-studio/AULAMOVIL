@@ -62,6 +62,42 @@ function read_state(): array
     return is_array($data) ? $data : [];
 }
 
+function state_updated_at(?array $state = null): ?DateTimeImmutable
+{
+    $updatedAt = (string) (($state ?? [])['updated_at'] ?? '');
+    if ($updatedAt === '') {
+        return null;
+    }
+
+    try {
+        return new DateTimeImmutable($updatedAt);
+    } catch (Exception) {
+        return null;
+    }
+}
+
+function state_age_seconds(?array $state = null): ?int
+{
+    $updatedAt = state_updated_at($state);
+    if (!$updatedAt) {
+        return null;
+    }
+
+    $age = time() - $updatedAt->getTimestamp();
+    return max(0, (int) $age);
+}
+
+function state_is_online(?array $state = null): bool
+{
+    $age = state_age_seconds($state);
+    if ($age === null) {
+        return false;
+    }
+
+    $thresholdSec = max(3, (int) ceil(((int) app_config()['state_refresh_ms'] * 3) / 1000));
+    return $age <= $thresholdSec;
+}
+
 function write_state(array $state): void
 {
     ensure_storage();

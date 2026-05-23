@@ -394,7 +394,7 @@ $display = is_array($state['display'] ?? null) ? $state['display'] : [];
 </head>
 <body>
   <div class="background" id="background">
-    <div class="background-layer is-visible" id="bgLayerA" style="background-image: linear-gradient(rgba(6, 10, 16, 0.08), rgba(6, 10, 16, 0.26)), url('api/frame.php');"></div>
+    <div class="background-layer is-visible" id="bgLayerA" style="background-image: linear-gradient(rgba(6, 10, 16, 0.08), rgba(6, 10, 16, 0.26)), url('cloud_frame.php');"></div>
     <div class="background-layer" id="bgLayerB"></div>
   </div>
   <div class="shell">
@@ -443,7 +443,10 @@ $display = is_array($state['display'] ?? null) ? $state['display'] : [];
   <script>
     const frameRefreshMs = <?= $frameRefreshMs ?>;
     const stateRefreshMs = <?= $stateRefreshMs ?>;
+    const onlineThresholdMs = stateRefreshMs * 3;
     let activeBackgroundLayer = 'A';
+    let lastUpdatedAtValue = <?= json_encode((string) ($state['updated_at'] ?? ''), JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) ?>;
+    let latestOnlineFlag = null;
 
     function escapeHtml(value) {
       return String(value ?? '')
@@ -509,6 +512,15 @@ $display = is_array($state['display'] ?? null) ? $state['display'] : [];
         `);
       }
 
+      function pushCustomPair(leftHtml, rightHtml) {
+        ordered.push(`
+          <div class="metric-row">
+            ${leftHtml}
+            ${rightHtml}
+          </div>
+        `);
+      }
+
       pushSingle('Direccion');
       pushSingle('Velocidad');
       pushSingle('Luminosidad');
@@ -517,7 +529,19 @@ $display = is_array($state['display'] ?? null) ? $state['display'] : [];
       pushPair('Temp', 'Temp suelo');
       pushPair('Humedad', 'Hum suelo');
       pushPair('PM2.5', 'PM10');
-      pushSingle('Voltaje');
+      const voltajeMetric = byLabel.get('Voltaje');
+      if (voltajeMetric) {
+        consumed.add('Voltaje');
+      }
+      pushCustomPair(
+        voltajeMetric ? renderMetric(voltajeMetric) : '<article class="metric"></article>',
+        `
+          <article class="metric">
+            <div class="metric-label">Estado</div>
+            <div class="metric-value" id="onlineStatus">Online</div>
+          </article>
+        `
+      );
 
       uniqueMetrics.forEach((metric) => {
         const label = String(metric.label || '');
@@ -540,6 +564,17 @@ $display = is_array($state['display'] ?? null) ? $state['display'] : [];
       document.getElementById('line1').style.display = 'none';
       document.getElementById('line2').textContent = '';
       document.getElementById('line2').style.display = 'none';
+    }
+
+    function computeOnlineStatus(updatedAt, onlineFlag = null) {
+      if (typeof onlineFlag === 'boolean') {
+        return onlineFlag ? 'Online' : 'Offline';
+      }
+      if (!updatedAt) return 'Offline';
+      const ts = Date.parse(updatedAt);
+      if (Number.isNaN(ts)) return 'Offline';
+      const ageMs = Date.now() - ts;
+      return ageMs <= onlineThresholdMs ? 'Online' : 'Offline';
     }
 
     function parseLocation(location) {
@@ -605,18 +640,39 @@ $display = is_array($state['display'] ?? null) ? $state['display'] : [];
       setTimeout(() => leafletMap.invalidateSize(), 50);
     }
 
+    function renderOnlineStatus(updatedAt, onlineFlag = null) {
+      const statusEl = document.getElementById('onlineStatus');
+      if (!statusEl) return;
+      statusEl.textContent = computeOnlineStatus(updatedAt, onlineFlag);
+    }
+
     async function refreshState() {
       try {
-        const response = await fetch(`api/state.php?t=${Date.now()}`, { cache: 'no-store' });
+        const response = await fetch(`cloud_state.php?t=${Date.now()}`, { cache: 'no-store' });
         const payload = await response.json();
 
-        document.getElementById('updatedAt').textContent = payload.updated_at ? `Actualizado ${payload.updated_at}` : 'Sin actualizacion';
+        lastUpdatedAtValue = payload.updated_at || '';
+        latestOnlineFlag = typeof payload.is_online === 'boolean' ? payload.is_online : null;
         renderMetrics(payload.metrics || []);
+        renderOnlineStatus(lastUpdatedAtValue, latestOnlineFlag);
+        document.getElementById('updatedAt').textContent = payload.updated_at ? `Actualizado ${payload.updated_at}` : 'Sin actualizacion';
         renderDisplay(payload);
         renderMap(payload.location || '');
       } catch (error) {
+        latestOnlineFlag = false;
+        renderOnlineStatus('');
         document.getElementById('updatedAt').textContent = 'Sin actualizacion';
       }
+    }
+
+    function heartbeatOnlineStatus() {
+      if (latestOnlineFlag === true && lastUpdatedAtValue) {
+        const ts = Date.parse(lastUpdatedAtValue);
+        if (!Number.isNaN(ts) && (Date.now() - ts) > onlineThresholdMs) {
+          latestOnlineFlag = false;
+        }
+      }
+      renderOnlineStatus(lastUpdatedAtValue, latestOnlineFlag);
     }
 
     function refreshFrame() {
@@ -624,7 +680,7 @@ $display = is_array($state['display'] ?? null) ? $state['display'] : [];
       const nextLayer = document.getElementById(activeBackgroundLayer === 'A' ? 'bgLayerB' : 'bgLayerA');
       if (!currentLayer || !nextLayer) return;
 
-      const nextUrl = `api/frame.php?t=${Date.now()}`;
+      const nextUrl = `cloud_frame.php?t=${Date.now()}`;
       const preloader = new Image();
       preloader.onload = () => {
         nextLayer.style.backgroundImage =
@@ -637,6 +693,8 @@ $display = is_array($state['display'] ?? null) ? $state['display'] : [];
     }
 
     renderMetrics(<?= json_encode($state['metrics'] ?? [], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) ?>);
+    latestOnlineFlag = <?= json_encode(state_is_online($state)) ?>;
+    renderOnlineStatus(lastUpdatedAtValue, latestOnlineFlag);
     renderDisplay(<?= json_encode($state, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) ?>);
     renderMap(<?= json_encode((string) ($state['location'] ?? ''), JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) ?>);
     refreshState();
@@ -644,6 +702,7 @@ $display = is_array($state['display'] ?? null) ? $state['display'] : [];
 
     setInterval(refreshState, stateRefreshMs);
     setInterval(refreshFrame, frameRefreshMs);
+    setInterval(heartbeatOnlineStatus, 1000);
   </script>
 </body>
 <script
