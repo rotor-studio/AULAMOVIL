@@ -1,7 +1,7 @@
 <?php
 
 return [
-    'site_name' => 'MOVIL CLOUD',
+    'site_name' => 'NUBEMOVIL',
     'ingest_token' => 'change-this-token',
     'frame_refresh_ms' => 12000,
     'state_refresh_ms' => 5000,

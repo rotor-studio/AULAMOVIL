@@ -411,14 +411,14 @@ $display = is_array($state['display'] ?? null) ? $state['display'] : [];
           <path d="M45 100.5V28.5h4.7v72z" fill="#111111"></path>
           <path d="M51.5 35.5c9.2-4.5 23.9-7.2 42.3-4.8l10.8 30.4c-16.4-3.3-31.1-1.3-43.2 4.3L51.5 35.5z" fill="#111111"></path>
         </svg>
-        <p class="brand-copy">MOVILCLOUD - ROTOR STUDIO</p>
+        <p class="brand-copy">NUBEMOVIL - ROTOR STUDIO</p>
       </div>
     </header>
 
     <main class="layout">
       <section class="board">
         <div class="board-copy">
-          <h1 class="headline" id="headline"><?= htmlspecialchars((string) ($display['headline'] ?? $state['subtitle'] ?? 'MOVIL CLOUD'), ENT_QUOTES, 'UTF-8') ?></h1>
+          <h1 class="headline" id="headline"><?= htmlspecialchars((string) ($display['headline'] ?? $state['subtitle'] ?? 'NUBEMOVIL'), ENT_QUOTES, 'UTF-8') ?></h1>
           <p class="line" id="line1"><?= htmlspecialchars((string) ($display['line1'] ?? ''), ENT_QUOTES, 'UTF-8') ?></p>
           <p class="line secondary" id="line2"><?= htmlspecialchars((string) ($display['line2'] ?? ''), ENT_QUOTES, 'UTF-8') ?></p>
         </div>
@@ -557,7 +557,7 @@ $display = is_array($state['display'] ?? null) ? $state['display'] : [];
       const parts = [display.headline, display.line1, display.line2]
         .map((value) => String(value || '').trim())
         .filter(Boolean);
-      const headline = parts.length ? parts.join('. ') : (payload.subtitle || 'MOVIL CLOUD');
+      const headline = parts.length ? parts.join('. ') : (payload.subtitle || 'NUBEMOVIL');
 
       document.getElementById('headline').textContent = headline;
       document.getElementById('line1').textContent = '';

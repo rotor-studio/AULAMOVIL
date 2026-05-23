@@ -191,7 +191,7 @@
   - `systemctl status rotor-cloud-bridge`
   - `journalctl -u rotor-cloud-bridge -f`
   - verify `https://www.rotor-studio.net/nubemovil/cloud_state.php`
-  - verify `https://www.rotor-studio.net/nubemovil/index.php`
+  - verify `https://www.rotor-studio.net/nubemovil/nubemovil.php`
 
 ## Audio
 - Current USB speaker detected by ALSA as:
