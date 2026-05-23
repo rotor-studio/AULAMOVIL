@@ -19,6 +19,20 @@
 - Timelapse output:
   - `/opt/rotor-meteo/data/timelapse`
 
+## MOVILCLOUD App In Repo
+- Branch `movilcloud-site` also contains a PHP receiver app in `/movilcloud`
+- Latest validated branch commit:
+  - `944e3c1`
+- Main files:
+  - `/movilcloud/public/index.php`
+  - `/movilcloud/public/api/ingest.php`
+  - `/movilcloud/public/api/state.php`
+  - `/movilcloud/public/api/frame.php`
+- The committed app is template-safe:
+  - runtime `storage/` contents are not committed
+  - `config/config.php` keeps a placeholder token and must be edited per deployment
+  - current UI includes responsive mobile scroll behavior
+
 ## Required Layout On A New Pi
 - Linux user:
   - `aulamovil`
@@ -126,14 +140,16 @@
 - Purpose:
   - keeps Aula Movil behaving as it already does
   - adds a side-channel sender to an external PHP receiver
-- Current receiver target during local development:
-  - `http://127.0.0.1:18080/api/ingest.php`
-- Local development reachability model:
-  - the Windows PC runs `MOVILCLOUD` on `127.0.0.1:8080`
-  - a reverse SSH tunnel exposes that receiver inside the Pi as `127.0.0.1:18080`
-  - this avoids depending on Windows firewall changes
+- Current production receiver target:
+  - `https://www.rotor-studio.net/nubemovil/cloud_ingest.php`
+- Current validated `main` commit:
+  - `27adb57`
+- Legacy local development reachability model:
+  - the Windows PC can run `MOVILCLOUD` on `127.0.0.1:8080`
+  - a reverse SSH tunnel can expose that receiver inside the Pi as `127.0.0.1:18080`
+  - this is no longer the active production path
 - Receiver token expected by the local MOVILCLOUD instance:
-  - `5f2749200d6640328d7536c2e5b7e909`
+  - set this only in runtime config; do not commit the real token
 - Bridge defaults live in:
   - `/opt/rotor-meteo/config/app.yaml`
 - Secrets or overrides should live in:
@@ -150,12 +166,18 @@
   - `cloud_bridge.include_frame`
   - `cloud_bridge.metrics`
 - Current metric set sent to MOVILCLOUD:
-  - `sensor_community_1/temp_c`
-  - `sensor_community_1/rh_pct`
-  - `sensor_community_1/pressure_hpa`
-  - `wind_esp8266/wind_speed_ms`
-  - `rain_node_mcu/rain_mm_total`
-  - `light_mcu/light_lux`
+  - `wind_esp8266/wind_direction_deg -> Direccion`
+  - `wind_esp8266/wind_speed_ms -> Velocidad`
+  - `light_mcu/light_lux -> Luminosidad`
+  - `light_mcu/uv_voltage_v -> Radiacion UV`
+  - `rain_node_mcu/rain_mm_total -> Lluvia`
+  - `sensor_community_1/temp_c -> Temp`
+  - `sensor_community_1/rh_pct -> Humedad`
+  - `bme280_ground/temp_ground_c -> Temp suelo`
+  - `bme280_ground/rh_ground_pct -> Hum suelo`
+  - `sensor_community_1/pm2_5_ugm3 -> PM2.5`
+  - `sensor_community_1/pm10_ugm3 -> PM10`
+  - `static_value 12.4 -> Voltaje`
 - Bridge behavior:
   - sends JSON only
   - includes `frame_base64` when the latest frame file has changed
@@ -168,7 +190,8 @@
 - Validation:
   - `systemctl status rotor-cloud-bridge`
   - `journalctl -u rotor-cloud-bridge -f`
-  - verify `http://<pc-ip>:8080/api/state.php`
+  - verify `https://www.rotor-studio.net/nubemovil/cloud_state.php`
+  - verify `https://www.rotor-studio.net/nubemovil/index.php`
 
 ## Audio
 - Current USB speaker detected by ALSA as:
