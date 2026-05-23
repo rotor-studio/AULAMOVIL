@@ -21,6 +21,8 @@
 
 ## MOVILCLOUD App In Repo
 - Branch `movilcloud-site` also contains a PHP receiver app in `/movilcloud`
+- Public deploy notes:
+  - `/movilcloud/DEPLOY.md`
 - Latest validated branch commit:
   - `944e3c1`
 - Main files:
