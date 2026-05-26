@@ -7,6 +7,9 @@ import subprocess
 import tempfile
 import threading
 import time
+import urllib.error
+import urllib.parse
+import urllib.request
 import uuid
 import wave
 import math
@@ -350,6 +353,86 @@ def sample_before(points, seconds_ago):
         else:
             break
     return candidate or points[0]
+
+
+def get_actuator_config(name):
+    config = load_config().get(name, {})
+    return {
+        "enabled": bool(config.get("enabled", False)),
+        "base_url": str(config.get("base_url") or "").rstrip("/"),
+        "token": str(config.get("token") or ""),
+        "request_timeout_sec": max(1, int(config.get("request_timeout_sec", 4))),
+        "poll_interval_sec": max(2, int(config.get("poll_interval_sec", 5))),
+    }
+
+
+def actuator_unavailable_state(reason="not_configured"):
+    return {
+        "ok": False,
+        "configured": False,
+        "online": False,
+        "relay_on": False,
+        "reason": reason,
+    }
+
+
+def actuator_request(method, config_name, path, fields=None):
+    actuator = get_actuator_config(config_name)
+    if not actuator["enabled"] or not actuator["base_url"] or not actuator["token"]:
+        return actuator_unavailable_state()
+
+    url = actuator["base_url"] + path
+    body = None
+    headers = {
+        "X-Api-Token": actuator["token"],
+    }
+
+    payload_fields = dict(fields or {})
+    if method.upper() == "GET":
+        payload_fields["token"] = actuator["token"]
+        query = urllib.parse.urlencode(payload_fields)
+        if query:
+            url += "?" + query
+    else:
+        payload_fields["token"] = actuator["token"]
+        body = urllib.parse.urlencode(payload_fields).encode("utf-8")
+        headers["Content-Type"] = "application/x-www-form-urlencoded"
+
+    request = urllib.request.Request(url, data=body, headers=headers, method=method.upper())
+    try:
+        with urllib.request.urlopen(request, timeout=actuator["request_timeout_sec"]) as response:
+            data = json.load(response)
+            if not isinstance(data, dict):
+                raise ValueError("invalid actuator response")
+            data.setdefault("configured", True)
+            data.setdefault("online", True)
+            data.setdefault("relay_on", False)
+            data.setdefault("ok", True)
+            return data
+    except urllib.error.HTTPError as exc:
+        return {
+            "ok": False,
+            "configured": True,
+            "online": False,
+            "relay_on": False,
+            "reason": f"http_{exc.code}",
+        }
+    except Exception as exc:
+        return {
+            "ok": False,
+            "configured": True,
+            "online": False,
+            "relay_on": False,
+            "reason": str(exc),
+        }
+
+
+def vapor_request(method, path, fields=None):
+    return actuator_request(method, "vapor", path, fields)
+
+
+def fan_request(method, path, fields=None):
+    return actuator_request(method, "fan", path, fields)
 
 
 
@@ -924,6 +1007,30 @@ def api_sign_latest():
     return compute_forecast_payload()
 
 
+@app.get("/api/vapor/state")
+def api_vapor_state():
+    return vapor_request("GET", "/api/vapor/state")
+
+
+@app.post("/api/vapor/set")
+def api_vapor_set(enabled: bool = Form(...)):
+    return vapor_request("POST", "/api/vapor/set", {
+        "enabled": "true" if enabled else "false",
+    })
+
+
+@app.get("/api/fan/state")
+def api_fan_state():
+    return fan_request("GET", "/api/fan/state")
+
+
+@app.post("/api/fan/set")
+def api_fan_set(enabled: bool = Form(...)):
+    return fan_request("POST", "/api/fan/set", {
+        "enabled": "true" if enabled else "false",
+    })
+
+
 @app.get("/api/sound/state")
 def api_sound_state():
     config = load_sound_config()
@@ -1161,7 +1268,7 @@ def index():
 <head>
   <meta charset=\"utf-8\">
   <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">
-  <title>AULA MOVIL - ROTOR STUDIO</title>
+  <title>NUBEMOVIL - ROTOR STUDIO</title>
   <style>
     :root {{
       --sky-1: #eef7ff;
@@ -1242,7 +1349,46 @@ def index():
     .dot {{ display: inline-block; width: 10px; height: 10px; border-radius: 50%; }}
     .dot.online {{ background: #2ecc71; box-shadow: 0 0 6px rgba(46, 204, 113, 0.6); }}
     .dot.offline {{ background: #e74c3c; box-shadow: 0 0 6px rgba(231, 76, 60, 0.4); }}
+    .dot.idle {{ background: #f1c40f; box-shadow: 0 0 6px rgba(241, 196, 15, 0.5); }}
     .card-wide {{ grid-column: 1 / -1; }}
+    .vapor-panel {{
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+      gap: 16px;
+      align-items: stretch;
+    }}
+    .vapor-pilot {{
+      width: 18px;
+      height: 18px;
+      border-radius: 50%;
+      display: inline-block;
+      vertical-align: middle;
+      margin-right: 8px;
+      background: #e74c3c;
+      box-shadow: 0 0 10px rgba(231, 76, 60, 0.35);
+    }}
+    .vapor-pilot.on {{
+      background: #2ecc71;
+      box-shadow: 0 0 14px rgba(46, 204, 113, 0.5);
+    }}
+    .vapor-pilot.offline {{
+      background: #7f8c8d;
+      box-shadow: 0 0 10px rgba(127, 140, 141, 0.35);
+    }}
+    .vapor-toggle {{
+      border: 1px solid rgba(61, 142, 207, 0.45);
+      background: linear-gradient(135deg, rgba(61, 142, 207, 0.18), rgba(123, 183, 230, 0.3));
+      color: var(--ink);
+      font-size: 1.1rem;
+      padding: 14px 18px;
+      border-radius: 14px;
+      cursor: pointer;
+      min-width: 180px;
+    }}
+    .vapor-toggle:disabled {{
+      opacity: 0.6;
+      cursor: wait;
+    }}
     .forecast-card {{
       background:
         radial-gradient(circle at top right, rgba(255, 219, 120, 0.55), transparent 28%),
@@ -1288,7 +1434,7 @@ def index():
   </style>
 </head>
 <body>
-  <h1>AULA MOVIL - ROTOR STUDIO</h1>
+  <h1>NUBEMOVIL - ROTOR STUDIO</h1>
   <div class=\"tabs\">
     <div class=\"tab active\" data-tab=\"dashboard\">Dashboard</div>
     <div class=\"tab\" data-tab=\"wind\">Viento</div>
@@ -1297,6 +1443,7 @@ def index():
     <div class=\"tab\" data-tab=\"air\">PM y Aire</div>
     <div class=\"tab\" data-tab=\"gps\">Posición</div>
     <div class=\"tab\" data-tab=\"camera\">Cámara</div>
+    <div class=\"tab\" data-tab=\"vapor\">Vapor</div>
     <div class=\"tab\" data-tab=\"sound\">Sonido</div>
     <div class=\"tab\" data-tab=\"forecast\">Interpretación 24h</div>
   </div>
@@ -1390,6 +1537,36 @@ def index():
         <a id=\"gpsOsmLink\" target=\"_blank\" rel=\"noopener\">Abrir mapa</a>
       </div>
       <iframe id=\"gpsMap\" class=\"gps-map\" loading=\"lazy\"></iframe>
+    </div>
+  </div>
+
+  <div id=\"vapor\" class=\"panel\">
+    <h2>Vaporizadores</h2>
+    <div class=\"status-line\">Estado del enlace: <span id=\"vaporLinkStatus\" class=\"dot offline\"></span><span id=\"vaporLinkStatusText\">Offline</span></div>
+    <div class=\"vapor-panel\">
+      <div class=\"card\">
+        <h3>Vapor</h3>
+        <p><span id=\"vaporPilot\" class=\"vapor-pilot offline\"></span><strong id=\"vaporStateLabel\">Sin conexión</strong></p>
+        <div class=\"timelapse-actions\" style=\"margin-top:12px;\">
+          <button id=\"vaporToggleButton\" class=\"vapor-toggle\" onclick=\"toggleVapor()\">Activar vapor</button>
+        </div>
+        <div id=\"vaporStatusDetail\" style=\"margin-top:12px; opacity:0.85;\">Esperando configuración del relé.</div>
+      </div>
+      <div class=\"card\">
+        <h3>Ventilador</h3>
+        <p><span id=\"fanPilot\" class=\"vapor-pilot offline\"></span><strong id=\"fanStateLabel\">Sin conexión</strong></p>
+        <div class=\"timelapse-actions\" style=\"margin-top:12px;\">
+          <button id=\"fanToggleButton\" class=\"vapor-toggle\" onclick=\"toggleFan()\">Activar ventilador</button>
+        </div>
+        <div id=\"fanStatusDetail\" style=\"margin-top:12px; opacity:0.85;\">Control independiente del ventilador.</div>
+      </div>
+      <div class=\"card\">
+        <h3>Notas</h3>
+        <p>Estos controles conmutan dos relés independientes del ESP8266 para vapor y ventilador.</p>
+        <p>Desde aquí se enciende o apaga el transformador que alimenta los vaporizadores.</p>
+        <p>El piloto verde indica salida activa. Rojo indica apagado. Gris indica que la Pi no logra hablar con el módulo.</p>
+        <p>La misma interfaz permite accionar por separado el vapor y el ventilador.</p>
+      </div>
     </div>
   </div>
 
@@ -1642,6 +1819,195 @@ def index():
         dot.classList.toggle('offline', !online);
       }}
       if (text) text.textContent = online ? 'Online' : 'Offline';
+    }}
+
+    let vaporState = null;
+    let vaporBusy = false;
+    let fanState = null;
+    let fanBusy = false;
+
+    function renderActuatorControl(prefix, state, busy, labels) {{
+      const actuatorState = state || {{}};
+      const configured = !!actuatorState.configured;
+      const online = !!actuatorState.online;
+      const relayOn = !!actuatorState.relay_on;
+
+      const linkDot = document.getElementById(`${{prefix}}LinkStatus`);
+      const linkText = document.getElementById(`${{prefix}}LinkStatusText`);
+      const pilot = document.getElementById(`${{prefix}}Pilot`);
+      const stateLabel = document.getElementById(`${{prefix}}StateLabel`);
+      const detail = document.getElementById(`${{prefix}}StatusDetail`);
+      const button = document.getElementById(`${{prefix}}ToggleButton`);
+
+      if (linkDot) {{
+        linkDot.classList.toggle('online', online);
+        linkDot.classList.toggle('offline', !online);
+      }}
+      if (linkText) {{
+        if (!configured) {{
+          linkText.textContent = 'No configurado';
+        }} else {{
+          linkText.textContent = online ? 'Online' : 'Offline';
+        }}
+      }}
+
+      if (pilot) {{
+        pilot.classList.toggle('on', online && relayOn);
+        pilot.classList.toggle('offline', !online);
+      }}
+
+      if (stateLabel) {{
+        if (!configured) {{
+          stateLabel.textContent = 'No configurado';
+        }} else if (!online) {{
+          stateLabel.textContent = 'Sin conexión';
+        }} else {{
+          stateLabel.textContent = relayOn ? labels.onText : labels.offText;
+        }}
+      }}
+
+      if (detail) {{
+        if (!configured) {{
+          detail.textContent = labels.notConfiguredText;
+        }} else if (!online) {{
+          detail.textContent = `No se pudo contactar con el módulo: ${{actuatorState.reason || 'error desconocido'}}`;
+        }} else {{
+          detail.textContent = `Módulo operativo en ${{actuatorState.ip || 'IP desconocida'}}. ${{labels.readyText}}`;
+        }}
+      }}
+
+      if (button) {{
+        button.disabled = busy || !configured || !online;
+        button.textContent = relayOn ? labels.disableButton : labels.enableButton;
+      }}
+    }}
+
+    function renderVaporState(data) {{
+      vaporState = data || {{}};
+      const configured = !!vaporState.configured;
+      const online = !!vaporState.online;
+      const relayOn = !!vaporState.relay_on;
+
+      const linkDot = document.getElementById('vaporLinkStatus');
+      const linkText = document.getElementById('vaporLinkStatusText');
+      const pilot = document.getElementById('vaporPilot');
+      const stateLabel = document.getElementById('vaporStateLabel');
+      const detail = document.getElementById('vaporStatusDetail');
+      const button = document.getElementById('vaporToggleButton');
+
+      if (linkDot) {{
+        linkDot.classList.toggle('online', online);
+        linkDot.classList.toggle('offline', !online);
+      }}
+      if (linkText) {{
+        if (!configured) {{
+          linkText.textContent = 'No configurado';
+        }} else {{
+          linkText.textContent = online ? 'Online' : 'Offline';
+        }}
+      }}
+
+      if (pilot) {{
+        pilot.classList.toggle('on', online && relayOn);
+        pilot.classList.toggle('offline', !online);
+      }}
+
+      if (stateLabel) {{
+        if (!configured) {{
+          stateLabel.textContent = 'No configurado';
+        }} else if (!online) {{
+          stateLabel.textContent = 'Sin conexión';
+        }} else {{
+          stateLabel.textContent = relayOn ? 'Vapor activado' : 'Vapor apagado';
+        }}
+      }}
+
+      if (detail) {{
+        if (!configured) {{
+          detail.textContent = 'Falta configurar la URL o el token del módulo de vapor en la Pi.';
+        }} else if (!online) {{
+          detail.textContent = `No se pudo contactar con el módulo: ${{vaporState.reason || 'error desconocido'}}`;
+        }} else {{
+          detail.textContent = `Módulo operativo en ${{vaporState.ip || 'IP desconocida'}}.`;
+        }}
+      }}
+
+      if (button) {{
+        button.disabled = vaporBusy || !configured || !online;
+        button.textContent = relayOn ? 'Apagar vapor' : 'Activar vapor';
+      }}
+    }}
+
+    async function loadVaporState() {{
+      try {{
+        const res = await fetch('/api/vapor/state', {{ cache: 'no-store' }});
+        const data = await res.json();
+        renderVaporState(data);
+      }} catch (error) {{
+        renderVaporState({{ configured: true, online: false, relay_on: false, reason: 'fetch_failed' }});
+      }}
+    }}
+
+    async function toggleVapor() {{
+      if (!vaporState || !vaporState.configured || !vaporState.online || vaporBusy) {{
+        return;
+      }}
+      vaporBusy = true;
+      renderVaporState(vaporState);
+      try {{
+        const form = new FormData();
+        form.append('enabled', vaporState.relay_on ? 'false' : 'true');
+        const res = await fetch('/api/vapor/set', {{ method: 'POST', body: form }});
+        const data = await res.json();
+        renderVaporState(data);
+      }} catch (error) {{
+        renderVaporState({{ configured: true, online: false, relay_on: false, reason: 'toggle_failed' }});
+      }} finally {{
+        vaporBusy = false;
+        renderVaporState(vaporState);
+      }}
+    }}
+
+    function renderFanState(data) {{
+      fanState = data || {{}};
+      renderActuatorControl('fan', fanState, fanBusy, {{
+        onText: 'Ventilador activado',
+        offText: 'Ventilador apagado',
+        enableButton: 'Activar ventilador',
+        disableButton: 'Apagar ventilador',
+        readyText: '',
+        notConfiguredText: 'Control del ventilador pendiente de configuración.',
+      }});
+    }}
+
+    async function loadFanState() {{
+      try {{
+        const res = await fetch('/api/fan/state', {{ cache: 'no-store' }});
+        const data = await res.json();
+        renderFanState(data);
+      }} catch (error) {{
+        renderFanState({{ configured: true, online: false, relay_on: false, reason: 'fetch_failed' }});
+      }}
+    }}
+
+    async function toggleFan() {{
+      if (!fanState || !fanState.configured || !fanState.online || fanBusy) {{
+        return;
+      }}
+      fanBusy = true;
+      renderFanState(fanState);
+      try {{
+        const form = new FormData();
+        form.append('enabled', fanState.relay_on ? 'false' : 'true');
+        const res = await fetch('/api/fan/set', {{ method: 'POST', body: form }});
+        const data = await res.json();
+        renderFanState(data);
+      }} catch (error) {{
+        renderFanState({{ configured: true, online: false, relay_on: false, reason: 'toggle_failed' }});
+      }} finally {{
+        fanBusy = false;
+        renderFanState(fanState);
+      }}
     }}
 
     function buildSummaryCard(title, rows, ts) {{
@@ -2639,12 +3005,18 @@ async function renderForecast(data) {{
     evt.onmessage = () => loadLatest();
     renderGPS({{}});
     renderDashGps({{}});
+    renderVaporState({{ configured: false, online: false, relay_on: false }});
+    renderFanState({{ configured: false, online: false, relay_on: false }});
     loadLatest();
+    loadVaporState();
+    loadFanState();
     loadSoundState();
     startVideo();
     loadTimelapseStatus();
     setupTimelapseScroll();
     loadMoreTimelapse();
+    setInterval(loadVaporState, 5000);
+    setInterval(loadFanState, 5000);
   </script>
 </body>
 </html>

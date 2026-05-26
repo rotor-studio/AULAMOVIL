@@ -31,8 +31,8 @@ cloud_bridge:
   token: ""
   interval_sec: 12
   timeout_sec: 8
-  title: MOVIL CLOUD
-  subtitle: Aula Movil en directo
+  title: NUBEMOVIL
+  subtitle: NUBEMOVIL en directo
   frame_path: /opt/rotor-meteo/data/hls/latest.jpg
   include_frame: true
   metrics:
@@ -84,3 +84,15 @@ cloud_bridge:
       static_value: 12.4
       decimals: 1
       unit: V
+vapor:
+  enabled: false
+  base_url: ""
+  token: ""
+  request_timeout_sec: 4
+  poll_interval_sec: 5
+fan:
+  enabled: false
+  base_url: ""
+  token: ""
+  request_timeout_sec: 4
+  poll_interval_sec: 5
