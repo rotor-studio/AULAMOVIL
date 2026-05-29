@@ -109,11 +109,13 @@
   - device `/dev/ttyACM0`
   - baud `9600`
 - Sensor.Community:
-  - URL `http://192.168.0.171/data.json`
+  - URL `http://192.168.1.110/data.json`
 
 ## Current Network Model
 - No AP mode in use
 - `wlan0` joins Wi-Fi `NUBEMOVIL`
+- current validated Pi IP on that LAN:
+  - `192.168.1.104`
 - `eth0` is reserved for the CCTV camera network
 - Current camera-side static Pi address:
   - `192.168.50.2/24`
@@ -134,8 +136,18 @@
 - Runtime note:
   - the relay ESP may change DHCP address unless the router reserves it
   - when that happens, update `vapor.base_url` and `fan.base_url` in `/etc/rotor-meteo/secrets.yaml`
-- Current validated working relay IP at last check:
-  - `192.168.0.172`
+- do not hardcode the live relay IP in git notes; it is DHCP unless reserved in the router
+
+## Current Sensor State
+- Working on `NUBEMOVIL` at last validation:
+  - rain node
+  - wind/direction node
+  - ground BME node via `meteo/env/*`
+  - light/UV node via `light_mcu`
+  - Sensor.Community at `192.168.1.110`
+- GPS device presence:
+  - serial device still appears on `/dev/ttyACM0`
+  - last known position may remain stale if the receiver has no valid fix
 
 ## Services
 - `rotor-web`

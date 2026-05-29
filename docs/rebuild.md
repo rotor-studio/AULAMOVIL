@@ -75,11 +75,15 @@
 - `wlan0` joins the local Wi-Fi used by the station
 - current live deployment uses:
   - SSID `NUBEMOVIL`
+- current validated Pi IP on that LAN:
+  - `192.168.1.104`
 - `eth0` is reserved for the camera link
 - current camera-side static Pi address:
   - `192.168.50.2/24`
 - current camera fixed IP:
   - `192.168.50.10`
+- current Sensor.Community URL in the working deployment:
+  - `http://192.168.1.110/data.json`
 
 ## Service Units
 - install these in `/etc/systemd/system/`:
@@ -169,6 +173,8 @@
 - verify `/hls/stream.m3u8`
 - verify `/api/vapor/state` and `/api/fan/state` when the relay module is enabled
 - confirm `/opt/rotor-meteo/data/rotor.db` is growing
+- confirm `sensor_community_1` values appear in `/api/latest`
+- confirm `bme280_ground` values appear in `/api/latest`
 - if using the cloud bridge:
   - `systemctl is-active rotor-cloud-bridge`
   - `journalctl -u rotor-cloud-bridge -f`

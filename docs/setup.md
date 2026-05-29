@@ -2,9 +2,11 @@
 
 ## Network Mode (Current)
 - Wi-Fi `NUBEMOVIL` on `wlan0`
+- Current validated Pi IP on that LAN: `192.168.1.104`
 - eth0 reserved for the CCTV camera on a direct link with static addressing.
 - Pi on camera network: 192.168.50.2/24
 - Camera IP: 192.168.50.10/24
+- Sensor.Community currently expected at: `http://192.168.1.110/data.json`
 
 ## Camera (RTSP + HLS)
 We convert RTSP to HLS locally with ffmpeg.
@@ -72,6 +74,11 @@ Payload (JSON):
 
 ## Access
 Dashboard: http://<pi-ip>:8000/
+
+## Runtime Notes
+- Relay ESP IP is DHCP-driven unless reserved in the router.
+- Ground BME values arrive through `meteo/env/temperature_c` and `meteo/env/humidity`.
+- GPS can remain stale even when `/dev/ttyACM0` is present if the receiver has no valid fix.
 
 ## Install
 `
