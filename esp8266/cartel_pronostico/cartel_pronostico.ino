@@ -5,9 +5,9 @@
 #include <ESP8266HTTPClient.h>
 #include <ESP8266WiFi.h>
 
-const char* WIFI_SSID = "ROTORLINK";
-const char* WIFI_PASSWORD = "";
-const char* API_URL = "http://192.168.0.169:8000/api/sign/latest";
+const char* WIFI_SSID = "CHANGE_WIFI_SSID";
+const char* WIFI_PASSWORD = "CHANGE_WIFI_PASSWORD";
+const char* API_URL = "http://CHANGE_PI_HOST:8000/api/sign/latest";
 
 const unsigned long POLL_INTERVAL_MS = 30000;
 const unsigned long WIFI_RETRY_MS = 10000;

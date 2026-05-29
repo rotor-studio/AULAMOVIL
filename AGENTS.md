@@ -113,7 +113,7 @@
 
 ## Current Network Model
 - No AP mode in use
-- `wlan0` joins Wi-Fi `ROTORLINK`
+- `wlan0` joins Wi-Fi `NUBEMOVIL`
 - `eth0` is reserved for the CCTV camera network
 - Current camera-side static Pi address:
   - `192.168.50.2/24`

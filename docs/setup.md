@@ -1,7 +1,7 @@
 # NUBEMOVIL Setup Notes
 
 ## Network Mode (Current)
-- Wi-Fi on `wlan0`
+- Wi-Fi `NUBEMOVIL` on `wlan0`
 - eth0 reserved for the CCTV camera on a direct link with static addressing.
 - Pi on camera network: 192.168.50.2/24
 - Camera IP: 192.168.50.10/24

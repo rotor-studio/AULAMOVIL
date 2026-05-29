@@ -1,9 +1,9 @@
 #include <ESP8266WebServer.h>
 #include <ESP8266WiFi.h>
 
-static const char* WIFI_SSID = "ROTORLINK";
-static const char* WIFI_PASSWORD = "100*Rotor001";
-static const char* API_TOKEN = "666999";
+static const char* WIFI_SSID = "CHANGE_WIFI_SSID";
+static const char* WIFI_PASSWORD = "CHANGE_WIFI_PASSWORD";
+static const char* API_TOKEN = "CHANGE_API_TOKEN";
 static const char* HOSTNAME = "nubemovil-vapor";
 
 static const uint8_t VAPOR_RELAY_PIN = D6;

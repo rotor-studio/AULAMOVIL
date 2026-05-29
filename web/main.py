@@ -1720,6 +1720,12 @@ def index():
     let lastGpsDashMapSrc = '';
     let lastGpsText = '';
     let lastGpsData = null;
+    let latestLoading = false;
+    let latestQueued = false;
+    let rain24hLoading = false;
+    let lastRain24hFetch = 0;
+    const RAIN_HISTORY_REFRESH_MS = 60000;
+    let cameraStarted = false;
 
     function isWindMetric(id) {{
       return id && id.startsWith(WIND_METRIC_PREFIX);
@@ -1767,6 +1773,9 @@ def index():
     function setTab(name) {{
       document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === name));
       document.querySelectorAll('.panel').forEach(p => p.classList.toggle('active', p.id === name));
+      if (name === 'camera') {{
+        startVideo();
+      }}
     }}
 
     document.querySelectorAll('.tab').forEach(t => t.addEventListener('click', () => setTab(t.dataset.tab)));
@@ -2657,6 +2666,12 @@ async function renderForecast(data) {{
 
 
     async function loadLatest() {{
+      if (latestLoading) {{
+        latestQueued = true;
+        return;
+      }}
+      latestLoading = true;
+      try {{
       const res = await fetch('/api/latest');
       const data = await res.json();
       renderDashWind(data);
@@ -2728,6 +2743,13 @@ async function renderForecast(data) {{
       renderSimpleTable('gpsBody', ['gps_lat','gps_lon','gps_alt'], data);
       renderGPS(data);
       loadRain24h();
+      }} finally {{
+        latestLoading = false;
+        if (latestQueued) {{
+          latestQueued = false;
+          loadLatest();
+        }}
+      }}
     }}
 
     function renderWind(data) {{
@@ -2781,10 +2803,19 @@ async function renderForecast(data) {{
       ctx.stroke();
     }}
 
-    async function loadRain24h() {{
-      const res = await fetch('/api/history?metric=rain_mm_total');
-      const data = await res.json();
-      drawRainChart(data);
+    async function loadRain24h(force = false) {{
+      const now = Date.now();
+      if (rain24hLoading) return;
+      if (!force && (now - lastRain24hFetch) < RAIN_HISTORY_REFRESH_MS) return;
+      rain24hLoading = true;
+      try {{
+        const res = await fetch('/api/history?metric=rain_mm_total');
+        const data = await res.json();
+        drawRainChart(data);
+        lastRain24hFetch = Date.now();
+      }} finally {{
+        rain24hLoading = false;
+      }}
     }}
 
     function drawRainChart(points) {{
@@ -2842,6 +2873,8 @@ async function renderForecast(data) {{
     }}
 
     function startVideo() {{
+      if (cameraStarted) return;
+      cameraStarted = true;
       const video = document.getElementById('video');
       const snapshot = document.getElementById('cameraSnapshot');
       const fallbackText = document.getElementById('cameraFallbackText');
@@ -3011,10 +3044,12 @@ async function renderForecast(data) {{
     loadVaporState();
     loadFanState();
     loadSoundState();
-    startVideo();
     loadTimelapseStatus();
     setupTimelapseScroll();
     loadMoreTimelapse();
+    if (document.getElementById('camera')?.classList.contains('active')) {{
+      startVideo();
+    }}
     setInterval(loadVaporState, 5000);
     setInterval(loadFanState, 5000);
   </script>

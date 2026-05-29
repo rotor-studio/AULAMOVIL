@@ -74,7 +74,7 @@
 ## Current Network Model
 - `wlan0` joins the local Wi-Fi used by the station
 - current live deployment uses:
-  - SSID `ROTORLINK`
+  - SSID `NUBEMOVIL`
 - `eth0` is reserved for the camera link
 - current camera-side static Pi address:
   - `192.168.50.2/24`
