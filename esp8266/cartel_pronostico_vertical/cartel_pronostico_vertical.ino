@@ -9,9 +9,9 @@
 #define PSTR
 #endif
 
-const char* WIFI_SSID = "CHANGE_WIFI_SSID";
-const char* WIFI_PASSWORD = "CHANGE_WIFI_PASSWORD";
-const char* API_URL = "http://CHANGE_PI_HOST:8000/api/sign/latest";
+const char* WIFI_SSID = "NUBEMOVIL";
+const char* WIFI_PASSWORD = "100*Nubemovil001";
+const char* API_URL = "http://192.168.1.104:8000/api/sign/latest";
 
 const unsigned long WIFI_TIMEOUT_MS = 15000;
 const unsigned long POLL_INTERVAL_MS = 30000;

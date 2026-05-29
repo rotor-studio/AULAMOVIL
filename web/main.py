@@ -1726,6 +1726,9 @@ def index():
     let lastRain24hFetch = 0;
     const RAIN_HISTORY_REFRESH_MS = 60000;
     let cameraStarted = false;
+    let soundUiLoaded = false;
+    let timelapseUiLoaded = false;
+    let timelapseScrollBound = false;
 
     function isWindMetric(id) {{
       return id && id.startsWith(WIND_METRIC_PREFIX);
@@ -1773,12 +1776,24 @@ def index():
     function setTab(name) {{
       document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === name));
       document.querySelectorAll('.panel').forEach(p => p.classList.toggle('active', p.id === name));
-      if (name === 'camera') {{
-        startVideo();
-      }}
+      initializeTab(name);
     }}
 
     document.querySelectorAll('.tab').forEach(t => t.addEventListener('click', () => setTab(t.dataset.tab)));
+
+    function initializeTab(name) {{
+      if (name === 'camera' && !timelapseUiLoaded) {{
+        timelapseUiLoaded = true;
+        startVideo();
+        loadTimelapseStatus();
+        setupTimelapseScroll();
+        loadMoreTimelapse();
+      }}
+      if (name === 'sound' && !soundUiLoaded) {{
+        soundUiLoaded = true;
+        loadSoundState();
+      }}
+    }}
 
     function metricLabel(id) {{
       return METRIC_NAMES[id] || id;
@@ -3026,7 +3041,8 @@ async function renderForecast(data) {{
 
     function setupTimelapseScroll() {{
       const gallery = document.getElementById('timelapseGallery');
-      if (!gallery) return;
+      if (!gallery || timelapseScrollBound) return;
+      timelapseScrollBound = true;
       gallery.addEventListener('scroll', () => {{
         if (gallery.scrollTop + gallery.clientHeight >= gallery.scrollHeight - 50) {{
           loadMoreTimelapse();
@@ -3043,12 +3059,9 @@ async function renderForecast(data) {{
     loadLatest();
     loadVaporState();
     loadFanState();
-    loadSoundState();
-    loadTimelapseStatus();
-    setupTimelapseScroll();
-    loadMoreTimelapse();
-    if (document.getElementById('camera')?.classList.contains('active')) {{
-      startVideo();
+    const activePanel = document.querySelector('.panel.active');
+    if (activePanel) {{
+      initializeTab(activePanel.id);
     }}
     setInterval(loadVaporState, 5000);
     setInterval(loadFanState, 5000);
