@@ -1,9 +1,10 @@
-# Rotor Meteo AGENTS Notes
+# NUBEMOVIL AGENTS Notes
 
 ## Purpose
 - This repo runs a local weather station stack on a Raspberry Pi.
 - Main repo path on the Pi: `/opt/rotor-meteo`
 - Main host in the current deployment: `AULAMOVIL`
+- Public branding in the current deployment: `NUBEMOVIL`
 - Rebuild reference:
   - `docs/rebuild.md`
 
@@ -12,6 +13,11 @@
 - `rotor-collector`: MQTT, GPS, Sensor.Community and SQLite ingestion
 - `rotor-camera`: RTSP to HLS bridge
 - `rotor-cloud-bridge`: optional sender from the Pi to MOVILCLOUD
+- Relay controller:
+  - ESP8266 dual relay for `vapor` and `fan`
+- LED sign clients:
+  - horizontal sign
+  - vertical sign
 - Local SQLite DB:
   - `/opt/rotor-meteo/data/rotor.db`
 - Web-served HLS output:
@@ -77,6 +83,17 @@
 - Secrets outside git:
   - `/etc/rotor-meteo/secrets.yaml`
 
+## Runtime Overrides In secrets.yaml
+- `camera.password`
+- `cloud_bridge.enabled`
+- `cloud_bridge.token`
+- `vapor.enabled`
+- `vapor.base_url`
+- `vapor.token`
+- `fan.enabled`
+- `fan.base_url`
+- `fan.token`
+
 ## Current app.yaml Assumptions
 - MQTT:
   - host `127.0.0.1`
@@ -102,6 +119,23 @@
   - `192.168.50.2/24`
 - Camera fixed IP:
   - `192.168.50.10`
+
+## Relay Control
+- Local web endpoints:
+  - `GET /api/vapor/state`
+  - `POST /api/vapor/set`
+  - `GET /api/fan/state`
+  - `POST /api/fan/set`
+- Relay module behavior:
+  - same ESP8266 serves both `vapor` and `fan`
+  - current logical pin map in the repo:
+    - `vapor -> D6`
+    - `fan -> D2`
+- Runtime note:
+  - the relay ESP may change DHCP address unless the router reserves it
+  - when that happens, update `vapor.base_url` and `fan.base_url` in `/etc/rotor-meteo/secrets.yaml`
+- Current validated working relay IP at last check:
+  - `192.168.0.172`
 
 ## Services
 - `rotor-web`
@@ -240,11 +274,17 @@
 ## ESP8266 Sign
 - Sketch repo path:
   - `/opt/rotor-meteo/esp8266/cartel_pronostico`
+- Vertical variant:
+  - `/opt/rotor-meteo/esp8266/cartel_pronostico_vertical`
 - Current matrix assumptions:
   - `38x8`
   - zigzag wiring
 - Current compact endpoint for sign/panel:
   - `/api/sign/latest`
+- Current reuse model:
+  - multiple LED signs can consume the same `/api/sign/latest` endpoint
+  - use the same logic if the panel hardware is equivalent
+  - use the vertical sketch only when text must be rendered letter-by-letter in a column
 
 ## Validation Checklist After Deploy
 - `systemctl is-active rotor-web rotor-collector rotor-camera`
@@ -270,6 +310,9 @@
   - stop or kill `uvicorn`
   - `systemctl reset-failed rotor-web`
   - `systemctl start rotor-web`
+- Practical note:
+  - `systemctl restart rotor-web` can linger in `deactivating` while active browsers keep HLS/SSE connections open
+  - in that case, `systemctl kill rotor-web` followed by `systemctl start rotor-web` has been more reliable
 
 ## SSH / Access
 - Main SSH access is over `wlan0`
@@ -277,3 +320,5 @@
   - `http://<pi-ip>:8000/`
 - Compact sign endpoint:
   - `http://<pi-ip>:8000/api/sign/latest`
+- Relay web root, when the relay ESP is reachable:
+  - `http://<relay-ip>/`

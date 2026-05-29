@@ -1,7 +1,7 @@
-# Rotor Meteo Setup Notes
+# NUBEMOVIL Setup Notes
 
 ## Network Mode (Current)
-- Wi-Fi: ROTORLINK on wlan0
+- Wi-Fi on `wlan0`
 - eth0 reserved for the CCTV camera on a direct link with static addressing.
 - Pi on camera network: 192.168.50.2/24
 - Camera IP: 192.168.50.10/24
@@ -46,6 +46,29 @@ Payload (JSON):
 - GET /api/history?metric=...&from=...&to=...
 - GET /api/stream (SSE)
 - GET /api/camera
+- GET /api/sign/latest
+- GET /api/vapor/state
+- POST /api/vapor/set
+- GET /api/fan/state
+- POST /api/fan/set
+
+## Relay ESP
+- Dual relay module:
+  - vapor on `D6`
+  - fan on `D2`
+- The ESP address is expected to be provided at runtime in:
+  - `/etc/rotor-meteo/secrets.yaml`
+- If DHCP changes the relay IP, update:
+  - `vapor.base_url`
+  - `fan.base_url`
+
+## LED Signs
+- Main sign endpoint:
+  - `http://<pi-ip>:8000/api/sign/latest`
+- Horizontal sign sketch:
+  - `esp8266/cartel_pronostico`
+- Vertical sign sketch:
+  - `esp8266/cartel_pronostico_vertical`
 
 ## Access
 Dashboard: http://<pi-ip>:8000/
