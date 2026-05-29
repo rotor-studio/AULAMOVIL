@@ -1,13 +1,13 @@
 #include <ESP8266WebServer.h>
 #include <ESP8266WiFi.h>
 
-static const char* WIFI_SSID = "CHANGE_WIFI_SSID";
-static const char* WIFI_PASSWORD = "CHANGE_WIFI_PASSWORD";
-static const char* API_TOKEN = "CHANGE_API_TOKEN";
+static const char* WIFI_SSID = "ROTORLINK";
+static const char* WIFI_PASSWORD = "100*Rotor001";
+static const char* API_TOKEN = "666999";
 static const char* HOSTNAME = "nubemovil-vapor";
 
 static const uint8_t VAPOR_RELAY_PIN = D6;
-static const uint8_t FAN_RELAY_PIN = D8;
+static const uint8_t FAN_RELAY_PIN = D2;
 static const bool RELAY_ACTIVE_HIGH = true;
 static const bool DEFAULT_VAPOR_ON = false;
 static const bool DEFAULT_FAN_ON = false;
@@ -39,7 +39,7 @@ void applyVaporState(bool enabled) {
 void applyFanState(bool enabled) {
   fanRelayOn = enabled;
   digitalWrite(FAN_RELAY_PIN, relayLevel(fanRelayOn));
-  Serial.printf("[fan] relay=%s pin=D8\n", fanRelayOn ? "ON" : "OFF");
+  Serial.printf("[fan] relay=%s pin=D2\n", fanRelayOn ? "ON" : "OFF");
 }
 
 bool parseEnabledArg(bool* nextState) {
@@ -74,7 +74,7 @@ void sendFanState() {
   body += "\"relay_on\":";
   body += fanRelayOn ? "true" : "false";
   body += ",";
-  body += "\"pin\":\"D8\",";
+  body += "\"pin\":\"D2\",";
   body += "\"ip\":\"";
   body += WiFi.localIP().toString();
   body += "\"";
@@ -137,7 +137,7 @@ void handleRoot() {
   html += vaporRelayOn ? "ON" : "OFF";
   html += " (D6)</p><p>Ventilador: ";
   html += fanRelayOn ? "ON" : "OFF";
-  html += " (D8)</p><p>IP: ";
+  html += " (D2)</p><p>IP: ";
   html += WiFi.localIP().toString();
   html += "</p></body></html>";
   server.send(200, "text/html; charset=utf-8", html);
