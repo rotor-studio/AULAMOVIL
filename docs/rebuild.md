@@ -76,7 +76,7 @@
 - current live deployment uses:
   - SSID `NUBEMOVIL`
 - current validated Pi IP on that LAN:
-  - `192.168.1.104`
+  - `192.168.1.109`
 - `eth0` is reserved for the camera link
 - current camera-side static Pi address:
   - `192.168.50.2/24`
@@ -84,6 +84,24 @@
   - `192.168.50.10`
 - current Sensor.Community URL in the working deployment:
   - `http://192.168.1.110/data.json`
+
+## Current Reserved Device Map
+- `192.168.1.109`
+  - Pi `AULAMOVIL`
+- `192.168.1.110`
+  - Sensor.Community / PM
+- `192.168.1.108`
+  - vapor + fan relay ESP
+- `192.168.1.100`
+  - wind + direction + ground BME ESP
+- `192.168.1.101`
+  - light / UV ESP
+- `192.168.1.102`
+  - vertical LED sign
+- `192.168.1.103`
+  - rain / pluviometer ESP
+- `192.168.1.105`
+  - horizontal LED sign
 
 ## Service Units
 - install these in `/etc/systemd/system/`:
@@ -156,12 +174,47 @@
 
 ## LED Signs
 - Shared endpoint for sign clients:
-  - `http://<pi-ip>:8000/api/sign/latest`
-- Horizontal sketch:
-  - `/opt/rotor-meteo/esp8266/cartel_pronostico`
-- Vertical sketch:
-  - `/opt/rotor-meteo/esp8266/cartel_pronostico_vertical`
+  - `http://192.168.1.109:8000/api/sign/latest`
+- Horizontal sketch in current repo:
+  - `/opt/rotor-meteo/LEDPANEL/cartel_nubemovil_64x8`
+- Vertical sketch in current repo:
+  - `/opt/rotor-meteo/esp8266/cartel_pronostico_vertical_rain`
 - Use the same payload logic for multiple panels when the hardware is equivalent.
+- Horizontal sign notes:
+  - custom `5x6` compact font
+  - `1 px` top margin and `1 px` bottom margin
+  - startup shows `BOOT`
+  - waits `60000 ms` before first Wi-Fi connect attempt
+- Vertical sign notes:
+  - text-only when `display.effect = none`
+  - effect-only when `display.effect` is `rain`, `dust` or `lightning`
+  - startup shows `BOOT`
+  - waits `60000 ms` before first Wi-Fi connect attempt
+
+## FX Controls
+- `rotor-web` now includes an `FX` tab
+- available endpoints:
+  - `GET /api/fx/state`
+  - `POST /api/fx/text-color`
+  - `POST /api/fx/effect`
+- `api/sign/latest` can inject:
+  - `display.color`
+  - `display.effect`
+- current effect values:
+  - `none`
+  - `rain`
+  - `dust`
+  - `lightning`
+- current text color modes:
+  - `auto`
+  - `white`
+  - `green`
+  - `yellow`
+  - `orange`
+  - `red`
+  - `blue`
+  - `purple`
+- keep Wi-Fi secrets and relay tokens out of git; committed sketches should use placeholders
 
 ## Validation Checklist
 - `systemctl is-active rotor-web rotor-collector rotor-camera`

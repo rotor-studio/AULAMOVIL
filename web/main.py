@@ -75,6 +75,7 @@ TIMELAPSE_DIR = CAMERA.get("timelapse_dir") or "/opt/rotor-meteo/data/timelapse"
 CAMERA_STALE_SEC = float(CONFIG.get("camera", {}).get("stale_sec", 20))
 SOUND_DIR = "/opt/rotor-meteo/data/sounds"
 SOUND_CONFIG_PATH = "/opt/rotor-meteo/data/sound_config.json"
+FX_CONFIG_PATH = "/opt/rotor-meteo/data/fx_config.json"
 DEFAULT_USB_AUDIO_DEVICE = "plughw:CARD=CD002,DEV=0"
 DEFAULT_JACK_AUDIO_DEVICE = "plughw:CARD=Headphones,DEV=0"
 
@@ -473,6 +474,68 @@ def configured_output_device():
     return str(config.get("output_device") or "").strip()
 
 
+FX_COLOR_PRESETS = {
+    "auto": None,
+    "white": [255, 255, 255],
+    "green": [46, 204, 113],
+    "yellow": [241, 196, 15],
+    "orange": [243, 156, 18],
+    "red": [231, 76, 60],
+    "blue": [52, 152, 219],
+    "purple": [155, 89, 182],
+}
+
+FX_EFFECT_PRESETS = {
+    "none": {
+        "label": "Sin efecto",
+    },
+    "rain": {
+        "label": "Lluvia",
+    },
+    "dust": {
+        "label": "Polvo",
+    },
+    "lightning": {
+        "label": "Rayo",
+    },
+}
+
+
+def default_fx_config():
+    return {
+        "text_color_mode": "auto",
+        "effect_mode": "none",
+    }
+
+
+def load_fx_config():
+    if not os.path.exists(FX_CONFIG_PATH):
+        return default_fx_config()
+    try:
+        with open(FX_CONFIG_PATH, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if not isinstance(data, dict):
+            return default_fx_config()
+        mode = str(data.get("text_color_mode") or "auto").lower()
+        if mode not in FX_COLOR_PRESETS:
+            mode = "auto"
+        effect_mode = str(data.get("effect_mode") or "none").lower()
+        if effect_mode not in FX_EFFECT_PRESETS:
+            effect_mode = "none"
+        return {
+            "text_color_mode": mode,
+            "effect_mode": effect_mode,
+        }
+    except Exception:
+        return default_fx_config()
+
+
+def save_fx_config(config):
+    os.makedirs(os.path.dirname(FX_CONFIG_PATH), exist_ok=True)
+    with open(FX_CONFIG_PATH, "w", encoding="utf-8") as f:
+        json.dump(config, f, ensure_ascii=False, indent=2)
+
+
 def list_sound_files():
     os.makedirs(SOUND_DIR, exist_ok=True)
     items = []
@@ -823,6 +886,7 @@ sound_engine = SoundEngine()
 
 def compute_forecast_payload():
     latest = get_latest_map()
+    fx_config = load_fx_config()
     pressure = get_metric(latest, "pressure_hpa", "sensor_community_1")
     humidity = get_metric(latest, "rh_pct", "sensor_community_1")
     temperature = get_metric(latest, "temp_c", "sensor_community_1")
@@ -933,6 +997,18 @@ def compute_forecast_payload():
         item["ts"] for item in [pressure, humidity, temperature, wind, rain_rate, rain_total, light, pm10, pm25] if item
     ], default=0)
 
+    display_block = {
+        "headline": headline,
+        "line1": line1,
+        "line2": line2,
+        "brightness": 64,
+        "effect": fx_config.get("effect_mode", "none"),
+    }
+
+    text_color_mode = fx_config.get("text_color_mode", "auto")
+    if text_color_mode in FX_COLOR_PRESETS and FX_COLOR_PRESETS[text_color_mode]:
+        display_block["color"] = FX_COLOR_PRESETS[text_color_mode]
+
     return {
         "ts": time.time(),
         "source_ts": last_ts,
@@ -951,13 +1027,7 @@ def compute_forecast_payload():
             "label": air_label,
             "color": air_color,
         },
-        "display": {
-            "headline": headline,
-            "line1": line1,
-            "line2": line2,
-            "brightness": 64,
-            "effect": "solid",
-        },
+        "display": display_block,
         "metrics": {
             "temp_c": float(temperature["value"]) if temperature else None,
             "rh_pct": float(humidity["value"]) if humidity else None,
@@ -1005,6 +1075,67 @@ def api_history(
 @app.get("/api/sign/latest")
 def api_sign_latest():
     return compute_forecast_payload()
+
+
+@app.get("/api/fx/state")
+def api_fx_state():
+    config = load_fx_config()
+    return {
+        "ok": True,
+        "config": config,
+        "presets": [
+            {"id": key, "rgb": value}
+            for key, value in FX_COLOR_PRESETS.items()
+        ],
+        "effects": [
+            {"id": key, "label": value["label"]}
+            for key, value in FX_EFFECT_PRESETS.items()
+        ],
+    }
+
+
+@app.post("/api/fx/text-color")
+def api_fx_text_color(mode: str = Form(...)):
+    next_mode = str(mode or "auto").lower().strip()
+    if next_mode not in FX_COLOR_PRESETS:
+        raise HTTPException(status_code=400, detail="invalid_color_mode")
+    config = load_fx_config()
+    config["text_color_mode"] = next_mode
+    save_fx_config(config)
+    return {
+        "ok": True,
+        "config": config,
+        "effects": [
+            {"id": key, "label": value["label"]}
+            for key, value in FX_EFFECT_PRESETS.items()
+        ],
+        "presets": [
+            {"id": key, "rgb": value}
+            for key, value in FX_COLOR_PRESETS.items()
+        ],
+    }
+
+
+@app.post("/api/fx/effect")
+def api_fx_effect(mode: str = Form(...)):
+    next_mode = str(mode or "none").lower().strip()
+    if next_mode not in FX_EFFECT_PRESETS:
+        raise HTTPException(status_code=400, detail="invalid_effect_mode")
+    config = load_fx_config()
+    config["effect_mode"] = next_mode
+    save_fx_config(config)
+    return {
+        "ok": True,
+        "config": config,
+        "effects": [
+            {"id": key, "label": value["label"]}
+            for key, value in FX_EFFECT_PRESETS.items()
+        ],
+        "presets": [
+            {"id": key, "rgb": value}
+            for key, value in FX_COLOR_PRESETS.items()
+        ],
+    }
 
 
 @app.get("/api/vapor/state")
@@ -1444,6 +1575,7 @@ def index():
     <div class=\"tab\" data-tab=\"gps\">Posición</div>
     <div class=\"tab\" data-tab=\"camera\">Cámara</div>
     <div class=\"tab\" data-tab=\"vapor\">Vapor</div>
+    <div class=\"tab\" data-tab=\"fx\">FX</div>
     <div class=\"tab\" data-tab=\"sound\">Sonido</div>
     <div class=\"tab\" data-tab=\"forecast\">Interpretación 24h</div>
   </div>
@@ -1567,6 +1699,39 @@ def index():
         <p>El piloto verde indica salida activa. Rojo indica apagado. Gris indica que la Pi no logra hablar con el módulo.</p>
         <p>La misma interfaz permite accionar por separado el vapor y el ventilador.</p>
       </div>
+    </div>
+  </div>
+
+  <div id=\"fx\" class=\"panel\">
+    <h2>FX</h2>
+    <div class=\"card\">
+      <h3>Color del texto</h3>
+      <p>Por defecto, el cartel usa el color calculado por PM. Desde aquí puedes forzar un color desde la Pi.</p>
+      <div class=\"status-line\">Modo actual: <strong id=\"fxColorModeLabel\">auto</strong></div>
+      <div class=\"timelapse-actions\" style=\"margin-top:12px; flex-wrap:wrap;\">
+        <button onclick=\"setFxTextColor('auto')\">Auto (PM)</button>
+        <button onclick=\"setFxTextColor('white')\">Blanco</button>
+        <button onclick=\"setFxTextColor('green')\">Verde</button>
+        <button onclick=\"setFxTextColor('yellow')\">Amarillo</button>
+        <button onclick=\"setFxTextColor('orange')\">Naranja</button>
+        <button onclick=\"setFxTextColor('red')\">Rojo</button>
+        <button onclick=\"setFxTextColor('blue')\">Azul</button>
+        <button onclick=\"setFxTextColor('purple')\">Morado</button>
+      </div>
+      <div id=\"fxColorPreview\" style=\"margin-top:14px; width:72px; height:18px; border-radius:999px; border:1px solid #999; background:#ddd;\"></div>
+      <div id=\"fxStatusDetail\" style=\"margin-top:12px; opacity:0.85;\">Esperando estado.</div>
+    </div>
+    <div class=\"card\">
+      <h3>Efecto del cartel</h3>
+      <p>Selecciona un efecto simple para superponer sobre el texto del cartel.</p>
+      <div class=\"status-line\">Efecto actual: <strong id=\"fxEffectModeLabel\">none</strong></div>
+      <div class=\"timelapse-actions\" style=\"margin-top:12px; flex-wrap:wrap;\">
+        <button onclick=\"setFxEffect('none')\">Ninguno</button>
+        <button onclick=\"setFxEffect('rain')\">Lluvia</button>
+        <button onclick=\"setFxEffect('dust')\">Polvo</button>
+        <button onclick=\"setFxEffect('lightning')\">Rayo</button>
+      </div>
+      <div id=\"fxEffectDetail\" style=\"margin-top:12px; opacity:0.85;\">Esperando estado.</div>
     </div>
   </div>
 
@@ -1849,6 +2014,7 @@ def index():
     let vaporBusy = false;
     let fanState = null;
     let fanBusy = false;
+    let fxState = null;
 
     function renderActuatorControl(prefix, state, busy, labels) {{
       const actuatorState = state || {{}};
@@ -1990,6 +2156,67 @@ def index():
         vaporBusy = false;
         renderVaporState(vaporState);
       }}
+    }}
+
+    function renderFxState(data) {{
+      fxState = data || {{}};
+      const config = fxState.config || {{}};
+      const mode = config.text_color_mode || 'auto';
+      const effectMode = config.effect_mode || 'none';
+      const label = document.getElementById('fxColorModeLabel');
+      const detail = document.getElementById('fxStatusDetail');
+      const preview = document.getElementById('fxColorPreview');
+      const effectLabel = document.getElementById('fxEffectModeLabel');
+      const effectDetail = document.getElementById('fxEffectDetail');
+      if (label) label.textContent = mode;
+      if (effectLabel) effectLabel.textContent = effectMode;
+      if (detail) {{
+        detail.textContent = mode === 'auto'
+          ? 'El cartel usa el color calculado por PM.'
+          : `La Pi está forzando el color ${{mode}} en /api/sign/latest.`;
+      }}
+      if (effectDetail) {{
+        if (effectMode === 'none') {{
+          effectDetail.textContent = 'Sin efecto adicional. Solo texto.';
+        }} else if (effectMode === 'rain') {{
+          effectDetail.textContent = 'Gotas azules cayendo sobre el cartel.';
+        }} else if (effectMode === 'dust') {{
+          effectDetail.textContent = 'Polvo naranja repartido por la matriz.';
+        }} else {{
+          effectDetail.textContent = 'Flash blanco parcial tipo rayo.';
+        }}
+      }}
+      if (preview) {{
+        const preset = (fxState.presets || []).find(item => item.id === mode);
+        const rgb = preset && preset.rgb ? preset.rgb : null;
+        preview.style.background = rgb ? `rgb(${{rgb[0]}}, ${{rgb[1]}}, ${{rgb[2]}})` : 'linear-gradient(90deg, #2ecc71, #f1c40f, #e74c3c)';
+      }}
+    }}
+
+    async function loadFxState() {{
+      try {{
+        const res = await fetch('/api/fx/state', {{ cache: 'no-store' }});
+        const data = await res.json();
+        renderFxState(data);
+      }} catch (error) {{
+        renderFxState({{ config: {{ text_color_mode: 'auto' }}, presets: [] }});
+      }}
+    }}
+
+    async function setFxTextColor(mode) {{
+      const form = new FormData();
+      form.append('mode', mode);
+      const res = await fetch('/api/fx/text-color', {{ method: 'POST', body: form }});
+      const data = await res.json();
+      renderFxState(data);
+    }}
+
+    async function setFxEffect(mode) {{
+      const form = new FormData();
+      form.append('mode', mode);
+      const res = await fetch('/api/fx/effect', {{ method: 'POST', body: form }});
+      const data = await res.json();
+      renderFxState(data);
     }}
 
     function renderFanState(data) {{
@@ -3056,16 +3283,20 @@ async function renderForecast(data) {{
     renderDashGps({{}});
     renderVaporState({{ configured: false, online: false, relay_on: false }});
     renderFanState({{ configured: false, online: false, relay_on: false }});
+    renderFxState({{ config: {{ text_color_mode: 'auto' }}, presets: [] }});
     loadLatest();
     loadVaporState();
     loadFanState();
+    loadFxState();
     const activePanel = document.querySelector('.panel.active');
     if (activePanel) {{
       initializeTab(activePanel.id);
     }}
     setInterval(loadVaporState, 5000);
     setInterval(loadFanState, 5000);
+    setInterval(loadFxState, 10000);
   </script>
 </body>
 </html>
 """)
+

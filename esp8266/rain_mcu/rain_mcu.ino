@@ -2,10 +2,10 @@
 #include <PubSubClient.h>
 
 // Replace these placeholders before flashing a device.
-static const char* WIFI_SSID = "CHANGE_WIFI_SSID";
-static const char* WIFI_PASSWORD = "CHANGE_WIFI_PASSWORD";
-static const char* MQTT_HOST = "CHANGE_MQTT_HOST";
-static const int MQTT_PORT = 1883;
+  const char* WIFI_SSID = "CHANGE_WIFI_SSID";
+  const char* WIFI_PASSWORD = "CHANGE_WIFI_PASSWORD";
+  const char* MQTT_HOST = "192.168.1.109";
+  const int MQTT_PORT = 1883;
 
 // Keep the published topics stable so the collector continues to ingest data.
 static const char* TOPIC_TIPS_TOTAL = "meteo/rain/tips_total";

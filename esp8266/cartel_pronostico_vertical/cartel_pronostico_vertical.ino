@@ -9,15 +9,17 @@
 #define PSTR
 #endif
 
-const char* WIFI_SSID = "NUBEMOVIL";
-const char* WIFI_PASSWORD = "100*Nubemovil001";
-const char* API_URL = "http://192.168.1.104:8000/api/sign/latest";
+const char* WIFI_SSID = "CHANGE_WIFI_SSID";
+const char* WIFI_PASSWORD = "CHANGE_WIFI_PASSWORD";
+const char* API_URL = "http://192.168.1.109:8000/api/sign/latest";
 
 const unsigned long WIFI_TIMEOUT_MS = 15000;
 const unsigned long POLL_INTERVAL_MS = 30000;
 const unsigned long SCROLL_DELAY_MS = 160;
 const uint8_t CHAR_HEIGHT = 8;
-const int8_t CHAR_X = 1;
+const int8_t CHAR_LEFT_MARGIN = 1;
+const uint8_t FONT_WIDTH = 6;
+const uint8_t FONT_HEIGHT = 7;
 
 #define PIN D8
 
@@ -57,6 +59,50 @@ int16_t scrollY = 0;
 String displayText = "SIN DATOS";
 bool newDataReceived = false;
 uint16_t currentTextColor = matrix.Color(255, 255, 255);
+
+static const uint8_t FONT_SPACE[FONT_HEIGHT] PROGMEM = {0, 0, 0, 0, 0, 0, 0};
+static const uint8_t FONT_QUESTION[FONT_HEIGHT] PROGMEM = {0x1E, 0x21, 0x01, 0x06, 0x08, 0x00, 0x08};
+static const uint8_t FONT_DOT[FONT_HEIGHT] PROGMEM = {0, 0, 0, 0, 0, 0x0C, 0x0C};
+static const uint8_t FONT_COMMA[FONT_HEIGHT] PROGMEM = {0, 0, 0, 0, 0, 0x0C, 0x08};
+static const uint8_t FONT_COLON[FONT_HEIGHT] PROGMEM = {0, 0x0C, 0x0C, 0, 0x0C, 0x0C, 0};
+static const uint8_t FONT_DASH[FONT_HEIGHT] PROGMEM = {0, 0, 0x3F, 0, 0, 0, 0};
+static const uint8_t FONT_SLASH[FONT_HEIGHT] PROGMEM = {0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0};
+static const uint8_t FONT_0[FONT_HEIGHT] PROGMEM = {0x1E, 0x21, 0x23, 0x25, 0x29, 0x31, 0x1E};
+static const uint8_t FONT_1[FONT_HEIGHT] PROGMEM = {0x08, 0x18, 0x08, 0x08, 0x08, 0x08, 0x1C};
+static const uint8_t FONT_2[FONT_HEIGHT] PROGMEM = {0x1E, 0x21, 0x01, 0x06, 0x18, 0x20, 0x3F};
+static const uint8_t FONT_3[FONT_HEIGHT] PROGMEM = {0x1E, 0x21, 0x01, 0x0E, 0x01, 0x21, 0x1E};
+static const uint8_t FONT_4[FONT_HEIGHT] PROGMEM = {0x04, 0x0C, 0x14, 0x24, 0x3F, 0x04, 0x04};
+static const uint8_t FONT_5[FONT_HEIGHT] PROGMEM = {0x3F, 0x20, 0x3E, 0x01, 0x01, 0x21, 0x1E};
+static const uint8_t FONT_6[FONT_HEIGHT] PROGMEM = {0x0E, 0x10, 0x20, 0x3E, 0x21, 0x21, 0x1E};
+static const uint8_t FONT_7[FONT_HEIGHT] PROGMEM = {0x3F, 0x21, 0x02, 0x04, 0x08, 0x08, 0x08};
+static const uint8_t FONT_8[FONT_HEIGHT] PROGMEM = {0x1E, 0x21, 0x21, 0x1E, 0x21, 0x21, 0x1E};
+static const uint8_t FONT_9[FONT_HEIGHT] PROGMEM = {0x1E, 0x21, 0x21, 0x1F, 0x01, 0x02, 0x1C};
+static const uint8_t FONT_A[FONT_HEIGHT] PROGMEM = {0x1E, 0x21, 0x21, 0x3F, 0x21, 0x21, 0x21};
+static const uint8_t FONT_B[FONT_HEIGHT] PROGMEM = {0x3E, 0x21, 0x21, 0x3E, 0x21, 0x21, 0x3E};
+static const uint8_t FONT_C[FONT_HEIGHT] PROGMEM = {0x1E, 0x21, 0x20, 0x20, 0x20, 0x21, 0x1E};
+static const uint8_t FONT_D[FONT_HEIGHT] PROGMEM = {0x3C, 0x22, 0x21, 0x21, 0x21, 0x22, 0x3C};
+static const uint8_t FONT_E[FONT_HEIGHT] PROGMEM = {0x3F, 0x20, 0x20, 0x3E, 0x20, 0x20, 0x3F};
+static const uint8_t FONT_F[FONT_HEIGHT] PROGMEM = {0x3F, 0x20, 0x20, 0x3E, 0x20, 0x20, 0x20};
+static const uint8_t FONT_G[FONT_HEIGHT] PROGMEM = {0x1E, 0x21, 0x20, 0x27, 0x21, 0x21, 0x1F};
+static const uint8_t FONT_H[FONT_HEIGHT] PROGMEM = {0x21, 0x21, 0x21, 0x3F, 0x21, 0x21, 0x21};
+static const uint8_t FONT_I[FONT_HEIGHT] PROGMEM = {0x1E, 0x08, 0x08, 0x08, 0x08, 0x08, 0x1E};
+static const uint8_t FONT_J[FONT_HEIGHT] PROGMEM = {0x07, 0x02, 0x02, 0x02, 0x22, 0x22, 0x1C};
+static const uint8_t FONT_K[FONT_HEIGHT] PROGMEM = {0x21, 0x22, 0x24, 0x38, 0x24, 0x22, 0x21};
+static const uint8_t FONT_L[FONT_HEIGHT] PROGMEM = {0x20, 0x20, 0x20, 0x20, 0x20, 0x20, 0x3F};
+static const uint8_t FONT_M[FONT_HEIGHT] PROGMEM = {0x21, 0x33, 0x2D, 0x2D, 0x21, 0x21, 0x21};
+static const uint8_t FONT_N[FONT_HEIGHT] PROGMEM = {0x21, 0x31, 0x29, 0x25, 0x23, 0x21, 0x21};
+static const uint8_t FONT_O[FONT_HEIGHT] PROGMEM = {0x1E, 0x21, 0x21, 0x21, 0x21, 0x21, 0x1E};
+static const uint8_t FONT_P[FONT_HEIGHT] PROGMEM = {0x3E, 0x21, 0x21, 0x3E, 0x20, 0x20, 0x20};
+static const uint8_t FONT_Q[FONT_HEIGHT] PROGMEM = {0x1E, 0x21, 0x21, 0x21, 0x25, 0x22, 0x1D};
+static const uint8_t FONT_R[FONT_HEIGHT] PROGMEM = {0x3E, 0x21, 0x21, 0x3E, 0x24, 0x22, 0x21};
+static const uint8_t FONT_S[FONT_HEIGHT] PROGMEM = {0x1F, 0x20, 0x20, 0x1E, 0x01, 0x01, 0x3E};
+static const uint8_t FONT_T[FONT_HEIGHT] PROGMEM = {0x3F, 0x08, 0x08, 0x08, 0x08, 0x08, 0x08};
+static const uint8_t FONT_U[FONT_HEIGHT] PROGMEM = {0x21, 0x21, 0x21, 0x21, 0x21, 0x21, 0x1E};
+static const uint8_t FONT_V[FONT_HEIGHT] PROGMEM = {0x21, 0x21, 0x21, 0x21, 0x12, 0x12, 0x0C};
+static const uint8_t FONT_W[FONT_HEIGHT] PROGMEM = {0x21, 0x21, 0x21, 0x2D, 0x2D, 0x33, 0x21};
+static const uint8_t FONT_X[FONT_HEIGHT] PROGMEM = {0x21, 0x12, 0x0C, 0x0C, 0x0C, 0x12, 0x21};
+static const uint8_t FONT_Y[FONT_HEIGHT] PROGMEM = {0x21, 0x12, 0x0C, 0x08, 0x08, 0x08, 0x08};
+static const uint8_t FONT_Z[FONT_HEIGHT] PROGMEM = {0x3F, 0x01, 0x02, 0x04, 0x08, 0x10, 0x3F};
 
 void safeCopy(char* dest, size_t size, const char* src) {
   if (!dest || size == 0) return;
@@ -260,13 +306,71 @@ int16_t verticalTextHeight() {
   return displayText.length() * CHAR_HEIGHT;
 }
 
+const uint8_t* glyphForChar(char ch) {
+  switch (ch) {
+    case ' ': return FONT_SPACE;
+    case '.': return FONT_DOT;
+    case ',': return FONT_COMMA;
+    case ':': return FONT_COLON;
+    case '-': return FONT_DASH;
+    case '/': return FONT_SLASH;
+    case '0': return FONT_0;
+    case '1': return FONT_1;
+    case '2': return FONT_2;
+    case '3': return FONT_3;
+    case '4': return FONT_4;
+    case '5': return FONT_5;
+    case '6': return FONT_6;
+    case '7': return FONT_7;
+    case '8': return FONT_8;
+    case '9': return FONT_9;
+    case 'A': return FONT_A;
+    case 'B': return FONT_B;
+    case 'C': return FONT_C;
+    case 'D': return FONT_D;
+    case 'E': return FONT_E;
+    case 'F': return FONT_F;
+    case 'G': return FONT_G;
+    case 'H': return FONT_H;
+    case 'I': return FONT_I;
+    case 'J': return FONT_J;
+    case 'K': return FONT_K;
+    case 'L': return FONT_L;
+    case 'M': return FONT_M;
+    case 'N': return FONT_N;
+    case 'O': return FONT_O;
+    case 'P': return FONT_P;
+    case 'Q': return FONT_Q;
+    case 'R': return FONT_R;
+    case 'S': return FONT_S;
+    case 'T': return FONT_T;
+    case 'U': return FONT_U;
+    case 'V': return FONT_V;
+    case 'W': return FONT_W;
+    case 'X': return FONT_X;
+    case 'Y': return FONT_Y;
+    case 'Z': return FONT_Z;
+    default: return FONT_QUESTION;
+  }
+}
+
+void drawVerticalChar(char ch, int16_t y) {
+  const uint8_t* glyph = glyphForChar(ch);
+  for (uint8_t row = 0; row < FONT_HEIGHT; row++) {
+    uint8_t bits = pgm_read_byte(&glyph[row]);
+    for (uint8_t col = 0; col < FONT_WIDTH; col++) {
+      if (bits & (1 << (FONT_WIDTH - 1 - col))) {
+        matrix.drawPixel(CHAR_LEFT_MARGIN + col, y + row, currentTextColor);
+      }
+    }
+  }
+}
+
 void drawText() {
   matrix.fillScreen(0);
   matrix.setTextColor(currentTextColor);
   for (uint16_t i = 0; i < displayText.length(); i++) {
-    char c[2] = { displayText.charAt(i), '\0' };
-    matrix.setCursor(CHAR_X, scrollY + (i * CHAR_HEIGHT));
-    matrix.print(c);
+    drawVerticalChar(displayText.charAt(i), scrollY + (i * CHAR_HEIGHT));
   }
   matrix.show();
 }

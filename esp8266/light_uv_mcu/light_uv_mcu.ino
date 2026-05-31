@@ -5,11 +5,10 @@
 #include <Adafruit_TSL2591.h>
 
 // Replace these placeholders before flashing a device.
-static const char* WIFI_SSID = "CHANGE_WIFI_SSID";
-static const char* WIFI_PASSWORD = "CHANGE_WIFI_PASSWORD";
-
-static const char* MQTT_HOST = "CHANGE_MQTT_HOST";
-static const int MQTT_PORT = 1883;
+  const char* WIFI_SSID = "CHANGE_WIFI_SSID";
+  const char* WIFI_PASSWORD = "CHANGE_WIFI_PASSWORD";
+  const char* MQTT_HOST = "192.168.1.109";
+  const int MQTT_PORT = 1883;
 
 static const uint8_t I2C_SDA_PIN = D2;
 static const uint8_t I2C_SCL_PIN = D1;

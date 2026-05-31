@@ -17,10 +17,10 @@ const unsigned long WIFI_TIMEOUT_MS = 15000;
 const unsigned long POLL_INTERVAL_MS = 30000;
 const unsigned long SCROLL_DELAY_MS = 160;
 const unsigned long WIFI_STARTUP_DELAY_MS = 60000;
-const uint8_t FONT_WIDTH = 5;
-const uint8_t FONT_HEIGHT = 6;
-const uint8_t CHAR_TOP_MARGIN = 1;
-const int16_t CHAR_ADVANCE_PX = 6;
+const uint8_t CHAR_HEIGHT = 8;
+const int8_t CHAR_LEFT_MARGIN = 1;
+const uint8_t FONT_WIDTH = 6;
+const uint8_t FONT_HEIGHT = 7;
 
 #define PIN D8
 
@@ -41,6 +41,7 @@ struct SignPayload {
   uint8_t brightness;
   uint8_t color[3];
   bool hasRemoteColor;
+  char effect[16];
 };
 
 StaticJsonDocument<2048> doc;
@@ -52,61 +53,84 @@ SignPayload currentPayload = {
   0.0f,
   24,
   {46, 204, 113},
-  false
+  false,
+  "none"
 };
 
 unsigned long lastPollMs = 0;
 unsigned long lastScrollMs = 0;
 unsigned long wifiStartupDeadlineMs = 0;
 uint8_t currentPage = 0;
-int16_t scrollX = matrix.width();
+int16_t scrollY = 0;
 String displayText = "SIN DATOS";
 bool newDataReceived = false;
 uint16_t currentTextColor = matrix.Color(255, 255, 255);
 
-static const uint8_t FONT_SPACE[FONT_HEIGHT] PROGMEM = {0, 0, 0, 0, 0, 0};
-static const uint8_t FONT_QUESTION[FONT_HEIGHT] PROGMEM = {0x0E, 0x11, 0x01, 0x06, 0x00, 0x04};
-static const uint8_t FONT_DOT[FONT_HEIGHT] PROGMEM = {0, 0, 0, 0, 0, 0x04};
-static const uint8_t FONT_COMMA[FONT_HEIGHT] PROGMEM = {0, 0, 0, 0, 0x04, 0x08};
-static const uint8_t FONT_COLON[FONT_HEIGHT] PROGMEM = {0, 0x04, 0, 0, 0x04, 0};
-static const uint8_t FONT_DASH[FONT_HEIGHT] PROGMEM = {0, 0, 0x1F, 0, 0, 0};
-static const uint8_t FONT_SLASH[FONT_HEIGHT] PROGMEM = {0x01, 0x02, 0x04, 0x08, 0x10, 0};
-static const uint8_t FONT_0[FONT_HEIGHT] PROGMEM = {0x0E, 0x11, 0x13, 0x15, 0x19, 0x0E};
-static const uint8_t FONT_1[FONT_HEIGHT] PROGMEM = {0x04, 0x0C, 0x04, 0x04, 0x04, 0x0E};
-static const uint8_t FONT_2[FONT_HEIGHT] PROGMEM = {0x0E, 0x11, 0x01, 0x06, 0x08, 0x1F};
-static const uint8_t FONT_3[FONT_HEIGHT] PROGMEM = {0x0E, 0x11, 0x02, 0x01, 0x11, 0x0E};
-static const uint8_t FONT_4[FONT_HEIGHT] PROGMEM = {0x02, 0x06, 0x0A, 0x1F, 0x02, 0x02};
-static const uint8_t FONT_5[FONT_HEIGHT] PROGMEM = {0x1F, 0x10, 0x1E, 0x01, 0x11, 0x0E};
-static const uint8_t FONT_6[FONT_HEIGHT] PROGMEM = {0x06, 0x08, 0x1E, 0x11, 0x11, 0x0E};
-static const uint8_t FONT_7[FONT_HEIGHT] PROGMEM = {0x1F, 0x01, 0x02, 0x04, 0x04, 0x04};
-static const uint8_t FONT_8[FONT_HEIGHT] PROGMEM = {0x0E, 0x11, 0x0E, 0x11, 0x11, 0x0E};
-static const uint8_t FONT_9[FONT_HEIGHT] PROGMEM = {0x0E, 0x11, 0x11, 0x0F, 0x01, 0x06};
-static const uint8_t FONT_A[FONT_HEIGHT] PROGMEM = {0x0E, 0x11, 0x11, 0x1F, 0x11, 0x11};
-static const uint8_t FONT_B[FONT_HEIGHT] PROGMEM = {0x1E, 0x11, 0x1E, 0x11, 0x11, 0x1E};
-static const uint8_t FONT_C[FONT_HEIGHT] PROGMEM = {0x0E, 0x11, 0x10, 0x10, 0x11, 0x0E};
-static const uint8_t FONT_D[FONT_HEIGHT] PROGMEM = {0x1C, 0x12, 0x11, 0x11, 0x12, 0x1C};
-static const uint8_t FONT_E[FONT_HEIGHT] PROGMEM = {0x1F, 0x10, 0x1E, 0x10, 0x10, 0x1F};
-static const uint8_t FONT_F[FONT_HEIGHT] PROGMEM = {0x1F, 0x10, 0x1E, 0x10, 0x10, 0x10};
-static const uint8_t FONT_G[FONT_HEIGHT] PROGMEM = {0x0E, 0x11, 0x10, 0x13, 0x11, 0x0F};
-static const uint8_t FONT_H[FONT_HEIGHT] PROGMEM = {0x11, 0x11, 0x1F, 0x11, 0x11, 0x11};
-static const uint8_t FONT_I[FONT_HEIGHT] PROGMEM = {0x0E, 0x04, 0x04, 0x04, 0x04, 0x0E};
-static const uint8_t FONT_J[FONT_HEIGHT] PROGMEM = {0x03, 0x01, 0x01, 0x01, 0x11, 0x0E};
-static const uint8_t FONT_K[FONT_HEIGHT] PROGMEM = {0x11, 0x12, 0x1C, 0x12, 0x11, 0x11};
-static const uint8_t FONT_L[FONT_HEIGHT] PROGMEM = {0x10, 0x10, 0x10, 0x10, 0x10, 0x1F};
-static const uint8_t FONT_M[FONT_HEIGHT] PROGMEM = {0x11, 0x1B, 0x15, 0x11, 0x11, 0x11};
-static const uint8_t FONT_N[FONT_HEIGHT] PROGMEM = {0x11, 0x19, 0x15, 0x13, 0x11, 0x11};
-static const uint8_t FONT_O[FONT_HEIGHT] PROGMEM = {0x0E, 0x11, 0x11, 0x11, 0x11, 0x0E};
-static const uint8_t FONT_P[FONT_HEIGHT] PROGMEM = {0x1E, 0x11, 0x11, 0x1E, 0x10, 0x10};
-static const uint8_t FONT_Q[FONT_HEIGHT] PROGMEM = {0x0E, 0x11, 0x11, 0x15, 0x12, 0x0D};
-static const uint8_t FONT_R[FONT_HEIGHT] PROGMEM = {0x1E, 0x11, 0x11, 0x1E, 0x12, 0x11};
-static const uint8_t FONT_S[FONT_HEIGHT] PROGMEM = {0x0F, 0x10, 0x0E, 0x01, 0x11, 0x0E};
-static const uint8_t FONT_T[FONT_HEIGHT] PROGMEM = {0x1F, 0x04, 0x04, 0x04, 0x04, 0x04};
-static const uint8_t FONT_U[FONT_HEIGHT] PROGMEM = {0x11, 0x11, 0x11, 0x11, 0x11, 0x0E};
-static const uint8_t FONT_V[FONT_HEIGHT] PROGMEM = {0x11, 0x11, 0x11, 0x11, 0x0A, 0x04};
-static const uint8_t FONT_W[FONT_HEIGHT] PROGMEM = {0x11, 0x11, 0x11, 0x15, 0x1B, 0x11};
-static const uint8_t FONT_X[FONT_HEIGHT] PROGMEM = {0x11, 0x0A, 0x04, 0x04, 0x0A, 0x11};
-static const uint8_t FONT_Y[FONT_HEIGHT] PROGMEM = {0x11, 0x0A, 0x04, 0x04, 0x04, 0x04};
-static const uint8_t FONT_Z[FONT_HEIGHT] PROGMEM = {0x1F, 0x02, 0x04, 0x08, 0x10, 0x1F};
+enum EffectMode {
+  EFFECT_NONE,
+  EFFECT_RAIN,
+  EFFECT_DUST,
+  EFFECT_LIGHTNING,
+};
+
+const uint8_t RAIN_DROP_COUNT = 6;
+const uint8_t DUST_PIXEL_COUNT = 18;
+const uint16_t LIGHTNING_FLASH_MS = 110;
+const uint16_t LIGHTNING_GAP_MIN_MS = 1000;
+const uint16_t LIGHTNING_GAP_MAX_MS = 2200;
+
+int16_t rainDropY[RAIN_DROP_COUNT];
+uint8_t rainDropX[RAIN_DROP_COUNT];
+unsigned long lastEffectUpdateMs = 0;
+unsigned long lightningStartedMs = 0;
+unsigned long nextLightningMs = 0;
+bool lightningActive = false;
+uint8_t lightningBandX = 0;
+uint8_t lightningBandWidth = 3;
+
+static const uint8_t FONT_SPACE[FONT_HEIGHT] PROGMEM = {0, 0, 0, 0, 0, 0, 0};
+static const uint8_t FONT_QUESTION[FONT_HEIGHT] PROGMEM = {0x1E, 0x21, 0x01, 0x06, 0x08, 0x00, 0x08};
+static const uint8_t FONT_DOT[FONT_HEIGHT] PROGMEM = {0, 0, 0, 0, 0, 0x0C, 0x0C};
+static const uint8_t FONT_COMMA[FONT_HEIGHT] PROGMEM = {0, 0, 0, 0, 0, 0x0C, 0x08};
+static const uint8_t FONT_COLON[FONT_HEIGHT] PROGMEM = {0, 0x0C, 0x0C, 0, 0x0C, 0x0C, 0};
+static const uint8_t FONT_DASH[FONT_HEIGHT] PROGMEM = {0, 0, 0x3F, 0, 0, 0, 0};
+static const uint8_t FONT_SLASH[FONT_HEIGHT] PROGMEM = {0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0};
+static const uint8_t FONT_0[FONT_HEIGHT] PROGMEM = {0x1E, 0x21, 0x23, 0x25, 0x29, 0x31, 0x1E};
+static const uint8_t FONT_1[FONT_HEIGHT] PROGMEM = {0x08, 0x18, 0x08, 0x08, 0x08, 0x08, 0x1C};
+static const uint8_t FONT_2[FONT_HEIGHT] PROGMEM = {0x1E, 0x21, 0x01, 0x06, 0x18, 0x20, 0x3F};
+static const uint8_t FONT_3[FONT_HEIGHT] PROGMEM = {0x1E, 0x21, 0x01, 0x0E, 0x01, 0x21, 0x1E};
+static const uint8_t FONT_4[FONT_HEIGHT] PROGMEM = {0x04, 0x0C, 0x14, 0x24, 0x3F, 0x04, 0x04};
+static const uint8_t FONT_5[FONT_HEIGHT] PROGMEM = {0x3F, 0x20, 0x3E, 0x01, 0x01, 0x21, 0x1E};
+static const uint8_t FONT_6[FONT_HEIGHT] PROGMEM = {0x0E, 0x10, 0x20, 0x3E, 0x21, 0x21, 0x1E};
+static const uint8_t FONT_7[FONT_HEIGHT] PROGMEM = {0x3F, 0x21, 0x02, 0x04, 0x08, 0x08, 0x08};
+static const uint8_t FONT_8[FONT_HEIGHT] PROGMEM = {0x1E, 0x21, 0x21, 0x1E, 0x21, 0x21, 0x1E};
+static const uint8_t FONT_9[FONT_HEIGHT] PROGMEM = {0x1E, 0x21, 0x21, 0x1F, 0x01, 0x02, 0x1C};
+static const uint8_t FONT_A[FONT_HEIGHT] PROGMEM = {0x1E, 0x21, 0x21, 0x3F, 0x21, 0x21, 0x21};
+static const uint8_t FONT_B[FONT_HEIGHT] PROGMEM = {0x3E, 0x21, 0x21, 0x3E, 0x21, 0x21, 0x3E};
+static const uint8_t FONT_C[FONT_HEIGHT] PROGMEM = {0x1E, 0x21, 0x20, 0x20, 0x20, 0x21, 0x1E};
+static const uint8_t FONT_D[FONT_HEIGHT] PROGMEM = {0x3C, 0x22, 0x21, 0x21, 0x21, 0x22, 0x3C};
+static const uint8_t FONT_E[FONT_HEIGHT] PROGMEM = {0x3F, 0x20, 0x20, 0x3E, 0x20, 0x20, 0x3F};
+static const uint8_t FONT_F[FONT_HEIGHT] PROGMEM = {0x3F, 0x20, 0x20, 0x3E, 0x20, 0x20, 0x20};
+static const uint8_t FONT_G[FONT_HEIGHT] PROGMEM = {0x1E, 0x21, 0x20, 0x27, 0x21, 0x21, 0x1F};
+static const uint8_t FONT_H[FONT_HEIGHT] PROGMEM = {0x21, 0x21, 0x21, 0x3F, 0x21, 0x21, 0x21};
+static const uint8_t FONT_I[FONT_HEIGHT] PROGMEM = {0x1E, 0x08, 0x08, 0x08, 0x08, 0x08, 0x1E};
+static const uint8_t FONT_J[FONT_HEIGHT] PROGMEM = {0x07, 0x02, 0x02, 0x02, 0x22, 0x22, 0x1C};
+static const uint8_t FONT_K[FONT_HEIGHT] PROGMEM = {0x21, 0x22, 0x24, 0x38, 0x24, 0x22, 0x21};
+static const uint8_t FONT_L[FONT_HEIGHT] PROGMEM = {0x20, 0x20, 0x20, 0x20, 0x20, 0x20, 0x3F};
+static const uint8_t FONT_M[FONT_HEIGHT] PROGMEM = {0x21, 0x33, 0x2D, 0x2D, 0x21, 0x21, 0x21};
+static const uint8_t FONT_N[FONT_HEIGHT] PROGMEM = {0x21, 0x31, 0x29, 0x25, 0x23, 0x21, 0x21};
+static const uint8_t FONT_O[FONT_HEIGHT] PROGMEM = {0x1E, 0x21, 0x21, 0x21, 0x21, 0x21, 0x1E};
+static const uint8_t FONT_P[FONT_HEIGHT] PROGMEM = {0x3E, 0x21, 0x21, 0x3E, 0x20, 0x20, 0x20};
+static const uint8_t FONT_Q[FONT_HEIGHT] PROGMEM = {0x1E, 0x21, 0x21, 0x21, 0x25, 0x22, 0x1D};
+static const uint8_t FONT_R[FONT_HEIGHT] PROGMEM = {0x3E, 0x21, 0x21, 0x3E, 0x24, 0x22, 0x21};
+static const uint8_t FONT_S[FONT_HEIGHT] PROGMEM = {0x1F, 0x20, 0x20, 0x1E, 0x01, 0x01, 0x3E};
+static const uint8_t FONT_T[FONT_HEIGHT] PROGMEM = {0x3F, 0x08, 0x08, 0x08, 0x08, 0x08, 0x08};
+static const uint8_t FONT_U[FONT_HEIGHT] PROGMEM = {0x21, 0x21, 0x21, 0x21, 0x21, 0x21, 0x1E};
+static const uint8_t FONT_V[FONT_HEIGHT] PROGMEM = {0x21, 0x21, 0x21, 0x21, 0x12, 0x12, 0x0C};
+static const uint8_t FONT_W[FONT_HEIGHT] PROGMEM = {0x21, 0x21, 0x21, 0x2D, 0x2D, 0x33, 0x21};
+static const uint8_t FONT_X[FONT_HEIGHT] PROGMEM = {0x21, 0x12, 0x0C, 0x0C, 0x0C, 0x12, 0x21};
+static const uint8_t FONT_Y[FONT_HEIGHT] PROGMEM = {0x21, 0x12, 0x0C, 0x08, 0x08, 0x08, 0x08};
+static const uint8_t FONT_Z[FONT_HEIGHT] PROGMEM = {0x3F, 0x01, 0x02, 0x04, 0x08, 0x10, 0x3F};
 
 void safeCopy(char* dest, size_t size, const char* src) {
   if (!dest || size == 0) return;
@@ -153,6 +177,38 @@ uint16_t payloadColor(const SignPayload& payload) {
     return matrix.Color(payload.color[0], payload.color[1], payload.color[2]);
   }
   return colorForPm10(payload.pm10);
+}
+
+EffectMode effectModeFromName(const char* value) {
+  if (!value) return EFFECT_NONE;
+  if (strcmp(value, "rain") == 0) return EFFECT_RAIN;
+  if (strcmp(value, "dust") == 0) return EFFECT_DUST;
+  if (strcmp(value, "lightning") == 0) return EFFECT_LIGHTNING;
+  return EFFECT_NONE;
+}
+
+bool effectHidesText() {
+  return effectModeFromName(currentPayload.effect) != EFFECT_NONE;
+}
+
+void resetRainDrops() {
+  for (uint8_t i = 0; i < RAIN_DROP_COUNT; i++) {
+    rainDropX[i] = (uint8_t)random(0, matrix.width());
+    rainDropY[i] = -random(0, matrix.height());
+  }
+}
+
+void resetLightningTimer() {
+  lightningActive = false;
+  lightningStartedMs = 0;
+  nextLightningMs = millis() + LIGHTNING_GAP_MIN_MS + random(0, LIGHTNING_GAP_MAX_MS - LIGHTNING_GAP_MIN_MS + 1);
+}
+
+void initializeEffects() {
+  randomSeed(ESP.getChipId() ^ micros());
+  resetRainDrops();
+  resetLightningTimer();
+  lastEffectUpdateMs = millis();
 }
 
 void logWiFiStatus() {
@@ -230,6 +286,7 @@ bool parsePayload(const String& body, SignPayload& payload) {
   } else if (!doc["metrics"]["pm10_ugm3"].isNull()) {
     payload.pm10 = doc["metrics"]["pm10_ugm3"].as<float>();
   }
+
   payload.brightness = (uint8_t)(display["brightness"] | 24);
   if (payload.brightness > 40) payload.brightness = 40;
 
@@ -249,7 +306,14 @@ bool parsePayload(const String& body, SignPayload& payload) {
     }
   }
 
-  currentTextColor = payloadColor(payload);
+  safeCopy(payload.effect, sizeof(payload.effect), display["effect"] | "none");
+  normalizeText(payload.effect);
+  for (size_t i = 0; payload.effect[i] != '\0'; i++) {
+    if (payload.effect[i] >= 'A' && payload.effect[i] <= 'Z') {
+      payload.effect[i] = payload.effect[i] + 32;
+    }
+  }
+
   payload.ok = true;
 
   Serial.print("[json] headline=");
@@ -264,6 +328,8 @@ bool parsePayload(const String& body, SignPayload& payload) {
   Serial.println(payload.pm10, 2);
   Serial.print("[json] remoteColor=");
   Serial.println(payload.hasRemoteColor ? "yes" : "no");
+  Serial.print("[json] effect=");
+  Serial.println(payload.effect);
   return true;
 }
 
@@ -313,7 +379,7 @@ const char* pageText() {
 }
 
 void resetScroll() {
-  scrollX = matrix.width();
+  scrollY = matrix.height();
 }
 
 void nextPage() {
@@ -330,8 +396,8 @@ void updateDisplayText() {
   newDataReceived = true;
 }
 
-int16_t textWidthPx(const String& text) {
-  return text.length() * CHAR_ADVANCE_PX;
+int16_t verticalTextHeight() {
+  return displayText.length() * CHAR_HEIGHT;
 }
 
 const uint8_t* glyphForChar(char ch) {
@@ -382,24 +448,126 @@ const uint8_t* glyphForChar(char ch) {
   }
 }
 
-void drawHorizontalChar(char ch, int16_t x) {
+void drawVerticalChar(char ch, int16_t y) {
   const uint8_t* glyph = glyphForChar(ch);
   for (uint8_t row = 0; row < FONT_HEIGHT; row++) {
     uint8_t bits = pgm_read_byte(&glyph[row]);
     for (uint8_t col = 0; col < FONT_WIDTH; col++) {
       if (bits & (1 << (FONT_WIDTH - 1 - col))) {
-        matrix.drawPixel(x + col, CHAR_TOP_MARGIN + row, currentTextColor);
+        matrix.drawPixel(CHAR_LEFT_MARGIN + col, y + row, currentTextColor);
       }
     }
   }
 }
 
-void drawText() {
-  matrix.fillScreen(0);
-  for (size_t i = 0; i < displayText.length(); i++) {
-    drawHorizontalChar(displayText[i], scrollX + (i * CHAR_ADVANCE_PX));
+void updateRainEffect() {
+  const unsigned long now = millis();
+  if (now - lastEffectUpdateMs < 90) return;
+  lastEffectUpdateMs = now;
+  for (uint8_t i = 0; i < RAIN_DROP_COUNT; i++) {
+    rainDropY[i] += 2;
+    if (rainDropY[i] >= matrix.height()) {
+      rainDropX[i] = (uint8_t)random(0, matrix.width());
+      rainDropY[i] = -random(1, matrix.height() / 2 + 2);
+    }
   }
+}
 
+void drawRainEffect() {
+  const uint16_t blue = matrix.Color(70, 150, 255);
+  const uint16_t blueDim = matrix.Color(25, 70, 170);
+  for (uint8_t i = 0; i < RAIN_DROP_COUNT; i++) {
+    const int16_t x = rainDropX[i];
+    const int16_t y = rainDropY[i];
+    if (y >= 0 && y < matrix.height()) matrix.drawPixel(x, y, blue);
+    if (y - 1 >= 0 && y - 1 < matrix.height()) matrix.drawPixel(x, y - 1, blueDim);
+  }
+}
+
+void drawDustEffect() {
+  const uint16_t orange = matrix.Color(255, 140, 30);
+  const uint16_t amber = matrix.Color(200, 90, 10);
+  for (uint8_t i = 0; i < DUST_PIXEL_COUNT; i++) {
+    const uint8_t x = (uint8_t)random(0, matrix.width());
+    const uint8_t y = (uint8_t)random(0, matrix.height());
+    matrix.drawPixel(x, y, (random(0, 100) < 35) ? amber : orange);
+  }
+}
+
+void updateLightningEffect() {
+  const unsigned long now = millis();
+  if (lightningActive) {
+    if (now - lightningStartedMs >= LIGHTNING_FLASH_MS) {
+      resetLightningTimer();
+    }
+    return;
+  }
+  if (now >= nextLightningMs) {
+    lightningActive = true;
+    lightningStartedMs = now;
+    lightningBandWidth = (uint8_t)random(2, 5);
+    lightningBandX = (uint8_t)random(0, max(1, matrix.width() - lightningBandWidth + 1));
+  }
+}
+
+void drawLightningEffect() {
+  if (!lightningActive) return;
+  const uint16_t flash = matrix.Color(255, 255, 255);
+  const uint16_t halo = matrix.Color(180, 180, 180);
+  for (uint8_t x = lightningBandX; x < lightningBandX + lightningBandWidth && x < matrix.width(); x++) {
+    for (uint8_t y = 0; y < matrix.height(); y++) {
+      matrix.drawPixel(x, y, flash);
+    }
+  }
+  if (lightningBandX > 0) {
+    for (uint8_t y = 0; y < matrix.height(); y++) {
+      matrix.drawPixel(lightningBandX - 1, y, halo);
+    }
+  }
+  if (lightningBandX + lightningBandWidth < matrix.width()) {
+    for (uint8_t y = 0; y < matrix.height(); y++) {
+      matrix.drawPixel(lightningBandX + lightningBandWidth, y, halo);
+    }
+  }
+}
+
+void updateEffectFrame() {
+  switch (effectModeFromName(currentPayload.effect)) {
+    case EFFECT_RAIN:
+      updateRainEffect();
+      break;
+    case EFFECT_LIGHTNING:
+      updateLightningEffect();
+      break;
+    default:
+      break;
+  }
+}
+
+void drawEffectFrame() {
+  switch (effectModeFromName(currentPayload.effect)) {
+    case EFFECT_RAIN:
+      drawRainEffect();
+      break;
+    case EFFECT_DUST:
+      drawDustEffect();
+      break;
+    case EFFECT_LIGHTNING:
+      drawLightningEffect();
+      break;
+    default:
+      break;
+  }
+}
+
+void drawTextFrame() {
+  matrix.fillScreen(0);
+  drawEffectFrame();
+  if (!effectHidesText()) {
+    for (uint16_t i = 0; i < displayText.length(); i++) {
+      drawVerticalChar(displayText.charAt(i), scrollY + (i * CHAR_HEIGHT));
+    }
+  }
   matrix.show();
 }
 
@@ -407,19 +575,21 @@ void setup() {
   Serial.begin(115200);
   delay(200);
   Serial.println();
-  Serial.println("=== CARTEL NUBEMOVIL 64x8 ===");
+  Serial.println("=== CARTEL NUBEMOVIL 64x8 VERTICAL TEXT ===");
   Serial.print("[boot] reset=");
   Serial.println(ESP.getResetReason());
   Serial.print("[boot] api=");
   Serial.println(API_URL);
 
   matrix.begin();
+  matrix.setRotation(1);
   matrix.setTextWrap(false);
   matrix.setBrightness(40);
   matrix.setTextColor(matrix.Color(255, 255, 255));
   matrix.fillScreen(0);
   matrix.show();
   Serial.println("[matrix] ready");
+  initializeEffects();
   wifiStartupDeadlineMs = millis() + WIFI_STARTUP_DELAY_MS;
   Serial.print("[wifi] esperando router ");
   Serial.print(WIFI_STARTUP_DELAY_MS);
@@ -428,11 +598,13 @@ void setup() {
   displayText = "BOOT";
   currentTextColor = matrix.Color(60, 140, 255);
   newDataReceived = true;
+  drawTextFrame();
 
   SignPayload nextPayload = currentPayload;
   if (WiFi.status() == WL_CONNECTED && fetchPayload(nextPayload)) {
     currentPayload = nextPayload;
     matrix.setBrightness(currentPayload.brightness);
+    currentTextColor = payloadColor(currentPayload);
     Serial.println("[boot] payload inicial OK");
   } else {
     Serial.println("[boot] payload inicial KO");
@@ -440,6 +612,7 @@ void setup() {
 
   updateDisplayText();
   resetScroll();
+  drawTextFrame();
 }
 
 void loop() {
@@ -462,6 +635,7 @@ void loop() {
     if (fetchPayload(nextPayload)) {
       currentPayload = nextPayload;
       matrix.setBrightness(currentPayload.brightness);
+      currentTextColor = payloadColor(currentPayload);
       updateDisplayText();
       Serial.println("[ok] payload actualizado");
     }
@@ -470,14 +644,15 @@ void loop() {
   if (millis() - lastScrollMs >= SCROLL_DELAY_MS || newDataReceived) {
     if (newDataReceived) {
       matrix.fillScreen(0);
-      scrollX = matrix.width();
+      scrollY = matrix.height();
       newDataReceived = false;
     }
 
-    drawText();
+    updateEffectFrame();
+    drawTextFrame();
     lastScrollMs = millis();
 
-    if (--scrollX < -textWidthPx(displayText)) {
+    if (!effectHidesText() && --scrollY < -verticalTextHeight()) {
       nextPage();
     }
   }

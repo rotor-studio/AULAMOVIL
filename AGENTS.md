@@ -115,12 +115,30 @@
 - No AP mode in use
 - `wlan0` joins Wi-Fi `NUBEMOVIL`
 - current validated Pi IP on that LAN:
-  - `192.168.1.104`
+  - `192.168.1.109`
 - `eth0` is reserved for the CCTV camera network
 - Current camera-side static Pi address:
   - `192.168.50.2/24`
 - Camera fixed IP:
   - `192.168.50.10`
+
+## Current Reserved LAN Map
+- `192.168.1.109`
+  - Pi `AULAMOVIL`
+- `192.168.1.110`
+  - Sensor.Community / PM node
+- `192.168.1.108`
+  - vapor + fan relay ESP
+- `192.168.1.100`
+  - wind + direction + ground BME ESP
+- `192.168.1.101`
+  - light / UV ESP
+- `192.168.1.102`
+  - vertical LED sign
+- `192.168.1.103`
+  - rain / pluviometer ESP
+- `192.168.1.105`
+  - horizontal LED sign
 
 ## Relay Control
 - Local web endpoints:
@@ -148,6 +166,60 @@
 - GPS device presence:
   - serial device still appears on `/dev/ttyACM0`
   - last known position may remain stale if the receiver has no valid fix
+
+## FX Tab
+- `rotor-web` now exposes an `FX` tab in the dashboard
+- Current manual controls in `FX`:
+  - text color mode:
+    - `auto`
+    - `white`
+    - `green`
+    - `yellow`
+    - `orange`
+    - `red`
+    - `blue`
+    - `purple`
+  - display effect mode:
+    - `none`
+    - `rain`
+    - `dust`
+    - `lightning`
+- API endpoints:
+  - `GET /api/fx/state`
+  - `POST /api/fx/text-color`
+  - `POST /api/fx/effect`
+- `compute_forecast_payload()` injects into `display`:
+  - optional `color`
+  - optional `effect`
+
+## LED Sign Firmware State
+- Horizontal production-style sign:
+  - `LEDPANEL/cartel_nubemovil_64x8/cartel_nubemovil_64x8.ino`
+  - endpoint:
+    - `http://192.168.1.109:8000/api/sign/latest`
+  - custom horizontal compact font:
+    - `5x6`
+    - `1 px` empty top margin
+    - `1 px` empty bottom margin
+    - `6 px` advance per character
+  - startup behavior:
+    - shows `BOOT`
+    - waits `60000 ms` before first Wi-Fi attempt
+- Vertical production-style sign:
+  - `esp8266/cartel_pronostico_vertical_rain/cartel_pronostico_vertical_rain.ino`
+  - endpoint:
+    - `http://192.168.1.109:8000/api/sign/latest`
+  - text-only by default when `display.effect = none`
+  - effect-only modes when `display.effect` is:
+    - `rain`
+    - `dust`
+    - `lightning`
+  - startup behavior:
+    - shows `BOOT`
+    - waits `60000 ms` before first Wi-Fi attempt
+- Repo safety:
+  - committed sketches must keep placeholder Wi-Fi credentials and tokens
+  - real SSID, password and relay tokens stay outside git
 
 ## Services
 - `rotor-web`

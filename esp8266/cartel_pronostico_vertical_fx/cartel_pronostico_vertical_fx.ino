@@ -16,11 +16,12 @@ const char* API_URL = "http://192.168.1.109:8000/api/sign/latest";
 const unsigned long WIFI_TIMEOUT_MS = 15000;
 const unsigned long POLL_INTERVAL_MS = 30000;
 const unsigned long SCROLL_DELAY_MS = 160;
-const unsigned long WIFI_STARTUP_DELAY_MS = 60000;
-const uint8_t FONT_WIDTH = 5;
-const uint8_t FONT_HEIGHT = 6;
-const uint8_t CHAR_TOP_MARGIN = 1;
-const int16_t CHAR_ADVANCE_PX = 6;
+const unsigned long RAIN_STEP_MS = 120;
+const uint8_t CHAR_HEIGHT = 8;
+const int8_t CHAR_LEFT_MARGIN = 1;
+const uint8_t FONT_WIDTH = 6;
+const uint8_t FONT_HEIGHT = 7;
+const uint8_t DROP_COUNT = 5;
 
 #define PIN D8
 
@@ -40,7 +41,12 @@ struct SignPayload {
   float pm10;
   uint8_t brightness;
   uint8_t color[3];
-  bool hasRemoteColor;
+};
+
+struct RainDrop {
+  int16_t x;
+  int16_t y;
+  uint8_t speed;
 };
 
 StaticJsonDocument<2048> doc;
@@ -51,62 +57,63 @@ SignPayload currentPayload = {
   "",
   0.0f,
   24,
-  {46, 204, 113},
-  false
+  {46, 204, 113}
 };
+
+RainDrop drops[DROP_COUNT];
 
 unsigned long lastPollMs = 0;
 unsigned long lastScrollMs = 0;
-unsigned long wifiStartupDeadlineMs = 0;
+unsigned long lastRainMs = 0;
 uint8_t currentPage = 0;
-int16_t scrollX = matrix.width();
+int16_t scrollY = 0;
 String displayText = "SIN DATOS";
 bool newDataReceived = false;
 uint16_t currentTextColor = matrix.Color(255, 255, 255);
 
-static const uint8_t FONT_SPACE[FONT_HEIGHT] PROGMEM = {0, 0, 0, 0, 0, 0};
-static const uint8_t FONT_QUESTION[FONT_HEIGHT] PROGMEM = {0x0E, 0x11, 0x01, 0x06, 0x00, 0x04};
-static const uint8_t FONT_DOT[FONT_HEIGHT] PROGMEM = {0, 0, 0, 0, 0, 0x04};
-static const uint8_t FONT_COMMA[FONT_HEIGHT] PROGMEM = {0, 0, 0, 0, 0x04, 0x08};
-static const uint8_t FONT_COLON[FONT_HEIGHT] PROGMEM = {0, 0x04, 0, 0, 0x04, 0};
-static const uint8_t FONT_DASH[FONT_HEIGHT] PROGMEM = {0, 0, 0x1F, 0, 0, 0};
-static const uint8_t FONT_SLASH[FONT_HEIGHT] PROGMEM = {0x01, 0x02, 0x04, 0x08, 0x10, 0};
-static const uint8_t FONT_0[FONT_HEIGHT] PROGMEM = {0x0E, 0x11, 0x13, 0x15, 0x19, 0x0E};
-static const uint8_t FONT_1[FONT_HEIGHT] PROGMEM = {0x04, 0x0C, 0x04, 0x04, 0x04, 0x0E};
-static const uint8_t FONT_2[FONT_HEIGHT] PROGMEM = {0x0E, 0x11, 0x01, 0x06, 0x08, 0x1F};
-static const uint8_t FONT_3[FONT_HEIGHT] PROGMEM = {0x0E, 0x11, 0x02, 0x01, 0x11, 0x0E};
-static const uint8_t FONT_4[FONT_HEIGHT] PROGMEM = {0x02, 0x06, 0x0A, 0x1F, 0x02, 0x02};
-static const uint8_t FONT_5[FONT_HEIGHT] PROGMEM = {0x1F, 0x10, 0x1E, 0x01, 0x11, 0x0E};
-static const uint8_t FONT_6[FONT_HEIGHT] PROGMEM = {0x06, 0x08, 0x1E, 0x11, 0x11, 0x0E};
-static const uint8_t FONT_7[FONT_HEIGHT] PROGMEM = {0x1F, 0x01, 0x02, 0x04, 0x04, 0x04};
-static const uint8_t FONT_8[FONT_HEIGHT] PROGMEM = {0x0E, 0x11, 0x0E, 0x11, 0x11, 0x0E};
-static const uint8_t FONT_9[FONT_HEIGHT] PROGMEM = {0x0E, 0x11, 0x11, 0x0F, 0x01, 0x06};
-static const uint8_t FONT_A[FONT_HEIGHT] PROGMEM = {0x0E, 0x11, 0x11, 0x1F, 0x11, 0x11};
-static const uint8_t FONT_B[FONT_HEIGHT] PROGMEM = {0x1E, 0x11, 0x1E, 0x11, 0x11, 0x1E};
-static const uint8_t FONT_C[FONT_HEIGHT] PROGMEM = {0x0E, 0x11, 0x10, 0x10, 0x11, 0x0E};
-static const uint8_t FONT_D[FONT_HEIGHT] PROGMEM = {0x1C, 0x12, 0x11, 0x11, 0x12, 0x1C};
-static const uint8_t FONT_E[FONT_HEIGHT] PROGMEM = {0x1F, 0x10, 0x1E, 0x10, 0x10, 0x1F};
-static const uint8_t FONT_F[FONT_HEIGHT] PROGMEM = {0x1F, 0x10, 0x1E, 0x10, 0x10, 0x10};
-static const uint8_t FONT_G[FONT_HEIGHT] PROGMEM = {0x0E, 0x11, 0x10, 0x13, 0x11, 0x0F};
-static const uint8_t FONT_H[FONT_HEIGHT] PROGMEM = {0x11, 0x11, 0x1F, 0x11, 0x11, 0x11};
-static const uint8_t FONT_I[FONT_HEIGHT] PROGMEM = {0x0E, 0x04, 0x04, 0x04, 0x04, 0x0E};
-static const uint8_t FONT_J[FONT_HEIGHT] PROGMEM = {0x03, 0x01, 0x01, 0x01, 0x11, 0x0E};
-static const uint8_t FONT_K[FONT_HEIGHT] PROGMEM = {0x11, 0x12, 0x1C, 0x12, 0x11, 0x11};
-static const uint8_t FONT_L[FONT_HEIGHT] PROGMEM = {0x10, 0x10, 0x10, 0x10, 0x10, 0x1F};
-static const uint8_t FONT_M[FONT_HEIGHT] PROGMEM = {0x11, 0x1B, 0x15, 0x11, 0x11, 0x11};
-static const uint8_t FONT_N[FONT_HEIGHT] PROGMEM = {0x11, 0x19, 0x15, 0x13, 0x11, 0x11};
-static const uint8_t FONT_O[FONT_HEIGHT] PROGMEM = {0x0E, 0x11, 0x11, 0x11, 0x11, 0x0E};
-static const uint8_t FONT_P[FONT_HEIGHT] PROGMEM = {0x1E, 0x11, 0x11, 0x1E, 0x10, 0x10};
-static const uint8_t FONT_Q[FONT_HEIGHT] PROGMEM = {0x0E, 0x11, 0x11, 0x15, 0x12, 0x0D};
-static const uint8_t FONT_R[FONT_HEIGHT] PROGMEM = {0x1E, 0x11, 0x11, 0x1E, 0x12, 0x11};
-static const uint8_t FONT_S[FONT_HEIGHT] PROGMEM = {0x0F, 0x10, 0x0E, 0x01, 0x11, 0x0E};
-static const uint8_t FONT_T[FONT_HEIGHT] PROGMEM = {0x1F, 0x04, 0x04, 0x04, 0x04, 0x04};
-static const uint8_t FONT_U[FONT_HEIGHT] PROGMEM = {0x11, 0x11, 0x11, 0x11, 0x11, 0x0E};
-static const uint8_t FONT_V[FONT_HEIGHT] PROGMEM = {0x11, 0x11, 0x11, 0x11, 0x0A, 0x04};
-static const uint8_t FONT_W[FONT_HEIGHT] PROGMEM = {0x11, 0x11, 0x11, 0x15, 0x1B, 0x11};
-static const uint8_t FONT_X[FONT_HEIGHT] PROGMEM = {0x11, 0x0A, 0x04, 0x04, 0x0A, 0x11};
-static const uint8_t FONT_Y[FONT_HEIGHT] PROGMEM = {0x11, 0x0A, 0x04, 0x04, 0x04, 0x04};
-static const uint8_t FONT_Z[FONT_HEIGHT] PROGMEM = {0x1F, 0x02, 0x04, 0x08, 0x10, 0x1F};
+static const uint8_t FONT_SPACE[FONT_HEIGHT] PROGMEM = {0, 0, 0, 0, 0, 0, 0};
+static const uint8_t FONT_QUESTION[FONT_HEIGHT] PROGMEM = {0x1E, 0x21, 0x01, 0x06, 0x08, 0x00, 0x08};
+static const uint8_t FONT_DOT[FONT_HEIGHT] PROGMEM = {0, 0, 0, 0, 0, 0x0C, 0x0C};
+static const uint8_t FONT_COMMA[FONT_HEIGHT] PROGMEM = {0, 0, 0, 0, 0, 0x0C, 0x08};
+static const uint8_t FONT_COLON[FONT_HEIGHT] PROGMEM = {0, 0x0C, 0x0C, 0, 0x0C, 0x0C, 0};
+static const uint8_t FONT_DASH[FONT_HEIGHT] PROGMEM = {0, 0, 0x3F, 0, 0, 0, 0};
+static const uint8_t FONT_SLASH[FONT_HEIGHT] PROGMEM = {0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0};
+static const uint8_t FONT_0[FONT_HEIGHT] PROGMEM = {0x1E, 0x21, 0x23, 0x25, 0x29, 0x31, 0x1E};
+static const uint8_t FONT_1[FONT_HEIGHT] PROGMEM = {0x08, 0x18, 0x08, 0x08, 0x08, 0x08, 0x1C};
+static const uint8_t FONT_2[FONT_HEIGHT] PROGMEM = {0x1E, 0x21, 0x01, 0x06, 0x18, 0x20, 0x3F};
+static const uint8_t FONT_3[FONT_HEIGHT] PROGMEM = {0x1E, 0x21, 0x01, 0x0E, 0x01, 0x21, 0x1E};
+static const uint8_t FONT_4[FONT_HEIGHT] PROGMEM = {0x04, 0x0C, 0x14, 0x24, 0x3F, 0x04, 0x04};
+static const uint8_t FONT_5[FONT_HEIGHT] PROGMEM = {0x3F, 0x20, 0x3E, 0x01, 0x01, 0x21, 0x1E};
+static const uint8_t FONT_6[FONT_HEIGHT] PROGMEM = {0x0E, 0x10, 0x20, 0x3E, 0x21, 0x21, 0x1E};
+static const uint8_t FONT_7[FONT_HEIGHT] PROGMEM = {0x3F, 0x21, 0x02, 0x04, 0x08, 0x08, 0x08};
+static const uint8_t FONT_8[FONT_HEIGHT] PROGMEM = {0x1E, 0x21, 0x21, 0x1E, 0x21, 0x21, 0x1E};
+static const uint8_t FONT_9[FONT_HEIGHT] PROGMEM = {0x1E, 0x21, 0x21, 0x1F, 0x01, 0x02, 0x1C};
+static const uint8_t FONT_A[FONT_HEIGHT] PROGMEM = {0x1E, 0x21, 0x21, 0x3F, 0x21, 0x21, 0x21};
+static const uint8_t FONT_B[FONT_HEIGHT] PROGMEM = {0x3E, 0x21, 0x21, 0x3E, 0x21, 0x21, 0x3E};
+static const uint8_t FONT_C[FONT_HEIGHT] PROGMEM = {0x1E, 0x21, 0x20, 0x20, 0x20, 0x21, 0x1E};
+static const uint8_t FONT_D[FONT_HEIGHT] PROGMEM = {0x3C, 0x22, 0x21, 0x21, 0x21, 0x22, 0x3C};
+static const uint8_t FONT_E[FONT_HEIGHT] PROGMEM = {0x3F, 0x20, 0x20, 0x3E, 0x20, 0x20, 0x3F};
+static const uint8_t FONT_F[FONT_HEIGHT] PROGMEM = {0x3F, 0x20, 0x20, 0x3E, 0x20, 0x20, 0x20};
+static const uint8_t FONT_G[FONT_HEIGHT] PROGMEM = {0x1E, 0x21, 0x20, 0x27, 0x21, 0x21, 0x1F};
+static const uint8_t FONT_H[FONT_HEIGHT] PROGMEM = {0x21, 0x21, 0x21, 0x3F, 0x21, 0x21, 0x21};
+static const uint8_t FONT_I[FONT_HEIGHT] PROGMEM = {0x1E, 0x08, 0x08, 0x08, 0x08, 0x08, 0x1E};
+static const uint8_t FONT_J[FONT_HEIGHT] PROGMEM = {0x07, 0x02, 0x02, 0x02, 0x22, 0x22, 0x1C};
+static const uint8_t FONT_K[FONT_HEIGHT] PROGMEM = {0x21, 0x22, 0x24, 0x38, 0x24, 0x22, 0x21};
+static const uint8_t FONT_L[FONT_HEIGHT] PROGMEM = {0x20, 0x20, 0x20, 0x20, 0x20, 0x20, 0x3F};
+static const uint8_t FONT_M[FONT_HEIGHT] PROGMEM = {0x21, 0x33, 0x2D, 0x2D, 0x21, 0x21, 0x21};
+static const uint8_t FONT_N[FONT_HEIGHT] PROGMEM = {0x21, 0x31, 0x29, 0x25, 0x23, 0x21, 0x21};
+static const uint8_t FONT_O[FONT_HEIGHT] PROGMEM = {0x1E, 0x21, 0x21, 0x21, 0x21, 0x21, 0x1E};
+static const uint8_t FONT_P[FONT_HEIGHT] PROGMEM = {0x3E, 0x21, 0x21, 0x3E, 0x20, 0x20, 0x20};
+static const uint8_t FONT_Q[FONT_HEIGHT] PROGMEM = {0x1E, 0x21, 0x21, 0x21, 0x25, 0x22, 0x1D};
+static const uint8_t FONT_R[FONT_HEIGHT] PROGMEM = {0x3E, 0x21, 0x21, 0x3E, 0x24, 0x22, 0x21};
+static const uint8_t FONT_S[FONT_HEIGHT] PROGMEM = {0x1F, 0x20, 0x20, 0x1E, 0x01, 0x01, 0x3E};
+static const uint8_t FONT_T[FONT_HEIGHT] PROGMEM = {0x3F, 0x08, 0x08, 0x08, 0x08, 0x08, 0x08};
+static const uint8_t FONT_U[FONT_HEIGHT] PROGMEM = {0x21, 0x21, 0x21, 0x21, 0x21, 0x21, 0x1E};
+static const uint8_t FONT_V[FONT_HEIGHT] PROGMEM = {0x21, 0x21, 0x21, 0x21, 0x12, 0x12, 0x0C};
+static const uint8_t FONT_W[FONT_HEIGHT] PROGMEM = {0x21, 0x21, 0x21, 0x2D, 0x2D, 0x33, 0x21};
+static const uint8_t FONT_X[FONT_HEIGHT] PROGMEM = {0x21, 0x12, 0x0C, 0x0C, 0x0C, 0x12, 0x21};
+static const uint8_t FONT_Y[FONT_HEIGHT] PROGMEM = {0x21, 0x12, 0x0C, 0x08, 0x08, 0x08, 0x08};
+static const uint8_t FONT_Z[FONT_HEIGHT] PROGMEM = {0x3F, 0x01, 0x02, 0x04, 0x08, 0x10, 0x3F};
 
 void safeCopy(char* dest, size_t size, const char* src) {
   if (!dest || size == 0) return;
@@ -148,13 +155,6 @@ uint16_t colorForPm10(float pm10) {
   return matrix.Color(128, 0, 128);
 }
 
-uint16_t payloadColor(const SignPayload& payload) {
-  if (payload.hasRemoteColor) {
-    return matrix.Color(payload.color[0], payload.color[1], payload.color[2]);
-  }
-  return colorForPm10(payload.pm10);
-}
-
 void logWiFiStatus() {
   Serial.print("[wifi] status=");
   Serial.print(WiFi.status());
@@ -192,10 +192,6 @@ bool connectWiFi() {
 }
 
 bool ensureWiFi() {
-  if (wifiStartupDeadlineMs && millis() < wifiStartupDeadlineMs) {
-    return false;
-  }
-
   if (WiFi.status() == WL_CONNECTED) {
     return true;
   }
@@ -232,38 +228,15 @@ bool parsePayload(const String& body, SignPayload& payload) {
   }
   payload.brightness = (uint8_t)(display["brightness"] | 24);
   if (payload.brightness > 40) payload.brightness = 40;
-
-  payload.hasRemoteColor = false;
-  if (!display["color"].isNull()) {
-    JsonVariant color = display["color"];
-    if (color.is<JsonArray>() && color.size() >= 3) {
-      payload.color[0] = (uint8_t)(color[0] | 255);
-      payload.color[1] = (uint8_t)(color[1] | 255);
-      payload.color[2] = (uint8_t)(color[2] | 255);
-      payload.hasRemoteColor = true;
-    } else if (color.is<JsonObject>()) {
-      payload.color[0] = (uint8_t)(color["r"] | color["red"] | 255);
-      payload.color[1] = (uint8_t)(color["g"] | color["green"] | 255);
-      payload.color[2] = (uint8_t)(color["b"] | color["blue"] | 255);
-      payload.hasRemoteColor = true;
-    }
-  }
-
-  currentTextColor = payloadColor(payload);
+  uint16_t pmColor = colorForPm10(payload.pm10);
+  payload.color[0] = (pmColor >> 11) & 0x1F;
+  payload.color[0] = map(payload.color[0], 0, 31, 0, 255);
+  payload.color[1] = (pmColor >> 5) & 0x3F;
+  payload.color[1] = map(payload.color[1], 0, 63, 0, 255);
+  payload.color[2] = pmColor & 0x1F;
+  payload.color[2] = map(payload.color[2], 0, 31, 0, 255);
   payload.ok = true;
 
-  Serial.print("[json] headline=");
-  Serial.println(payload.headline);
-  Serial.print("[json] line1=");
-  Serial.println(payload.line1);
-  Serial.print("[json] line2=");
-  Serial.println(payload.line2);
-  Serial.print("[json] brightness=");
-  Serial.println(payload.brightness);
-  Serial.print("[json] pm10=");
-  Serial.println(payload.pm10, 2);
-  Serial.print("[json] remoteColor=");
-  Serial.println(payload.hasRemoteColor ? "yes" : "no");
   return true;
 }
 
@@ -274,28 +247,12 @@ bool fetchPayload(SignPayload& payload) {
   client.setTimeout(4000);
   http.setTimeout(4000);
 
-  Serial.print("[http] GET ");
-  Serial.println(API_URL);
-
   if (!http.begin(client, API_URL)) {
-    Serial.println("[http] begin failed");
     return false;
   }
 
   int status = http.GET();
-  Serial.print("[http] status=");
-  Serial.println(status);
-
-  if (status <= 0) {
-    Serial.print("[http] error=");
-    Serial.println(http.errorToString(status));
-    http.end();
-    return false;
-  }
-
-  if (status != HTTP_CODE_OK) {
-    Serial.print("[http] body status no OK=");
-    Serial.println(status);
+  if (status <= 0 || status != HTTP_CODE_OK) {
     http.end();
     return false;
   }
@@ -313,7 +270,7 @@ const char* pageText() {
 }
 
 void resetScroll() {
-  scrollX = matrix.width();
+  scrollY = matrix.height();
 }
 
 void nextPage() {
@@ -321,8 +278,6 @@ void nextPage() {
   resetScroll();
   displayText = pageText();
   newDataReceived = true;
-  Serial.print("[page] ");
-  Serial.println(currentPage);
 }
 
 void updateDisplayText() {
@@ -330,8 +285,8 @@ void updateDisplayText() {
   newDataReceived = true;
 }
 
-int16_t textWidthPx(const String& text) {
-  return text.length() * CHAR_ADVANCE_PX;
+int16_t verticalTextHeight() {
+  return displayText.length() * CHAR_HEIGHT;
 }
 
 const uint8_t* glyphForChar(char ch) {
@@ -382,13 +337,13 @@ const uint8_t* glyphForChar(char ch) {
   }
 }
 
-void drawHorizontalChar(char ch, int16_t x) {
+void drawVerticalChar(char ch, int16_t y) {
   const uint8_t* glyph = glyphForChar(ch);
   for (uint8_t row = 0; row < FONT_HEIGHT; row++) {
     uint8_t bits = pgm_read_byte(&glyph[row]);
     for (uint8_t col = 0; col < FONT_WIDTH; col++) {
       if (bits & (1 << (FONT_WIDTH - 1 - col))) {
-        matrix.drawPixel(x + col, CHAR_TOP_MARGIN + row, currentTextColor);
+        matrix.drawPixel(CHAR_LEFT_MARGIN + col, y + row, currentTextColor);
       }
     }
   }
@@ -396,46 +351,33 @@ void drawHorizontalChar(char ch, int16_t x) {
 
 void drawText() {
   matrix.fillScreen(0);
-  for (size_t i = 0; i < displayText.length(); i++) {
-    drawHorizontalChar(displayText[i], scrollX + (i * CHAR_ADVANCE_PX));
+  for (uint16_t i = 0; i < displayText.length(); i++) {
+    drawVerticalChar(displayText.charAt(i), scrollY + (i * CHAR_HEIGHT));
   }
-
   matrix.show();
 }
 
 void setup() {
   Serial.begin(115200);
   delay(200);
-  Serial.println();
-  Serial.println("=== CARTEL NUBEMOVIL 64x8 ===");
-  Serial.print("[boot] reset=");
-  Serial.println(ESP.getResetReason());
-  Serial.print("[boot] api=");
-  Serial.println(API_URL);
 
   matrix.begin();
+  matrix.setRotation(1);
   matrix.setTextWrap(false);
   matrix.setBrightness(40);
   matrix.setTextColor(matrix.Color(255, 255, 255));
   matrix.fillScreen(0);
   matrix.show();
-  Serial.println("[matrix] ready");
-  wifiStartupDeadlineMs = millis() + WIFI_STARTUP_DELAY_MS;
-  Serial.print("[wifi] esperando router ");
-  Serial.print(WIFI_STARTUP_DELAY_MS);
-  Serial.println(" ms");
 
-  displayText = "BOOT";
-  currentTextColor = matrix.Color(60, 140, 255);
-  newDataReceived = true;
+  connectWiFi();
 
   SignPayload nextPayload = currentPayload;
   if (WiFi.status() == WL_CONNECTED && fetchPayload(nextPayload)) {
     currentPayload = nextPayload;
     matrix.setBrightness(currentPayload.brightness);
-    Serial.println("[boot] payload inicial OK");
+    currentTextColor = colorForPm10(currentPayload.pm10);
   } else {
-    Serial.println("[boot] payload inicial KO");
+    currentTextColor = matrix.Color(255, 255, 255);
   }
 
   updateDisplayText();
@@ -444,13 +386,8 @@ void setup() {
 
 void loop() {
   if (!ensureWiFi()) {
-    if (wifiStartupDeadlineMs && millis() < wifiStartupDeadlineMs) {
-      displayText = "BOOT";
-      currentTextColor = matrix.Color(60, 140, 255);
-    } else {
-      displayText = "WIFI";
-      currentTextColor = matrix.Color(255, 120, 0);
-    }
+    displayText = "WIFI";
+    currentTextColor = matrix.Color(255, 120, 0);
     newDataReceived = true;
     delay(250);
     return;
@@ -462,22 +399,22 @@ void loop() {
     if (fetchPayload(nextPayload)) {
       currentPayload = nextPayload;
       matrix.setBrightness(currentPayload.brightness);
+      currentTextColor = colorForPm10(currentPayload.pm10);
       updateDisplayText();
-      Serial.println("[ok] payload actualizado");
     }
   }
 
   if (millis() - lastScrollMs >= SCROLL_DELAY_MS || newDataReceived) {
     if (newDataReceived) {
       matrix.fillScreen(0);
-      scrollX = matrix.width();
+      scrollY = matrix.height();
       newDataReceived = false;
     }
 
     drawText();
     lastScrollMs = millis();
 
-    if (--scrollX < -textWidthPx(displayText)) {
+    if (--scrollY < -verticalTextHeight()) {
       nextPage();
     }
   }

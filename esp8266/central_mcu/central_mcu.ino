@@ -4,10 +4,10 @@
 #include <Adafruit_Sensor.h>
 #include <Adafruit_BME280.h>
 
-const char* WIFI_SSID = "CHANGE_WIFI_SSID";
-const char* WIFI_PASSWORD = "CHANGE_WIFI_PASSWORD";
-const char* MQTT_HOST = "CHANGE_MQTT_HOST";
-const int MQTT_PORT = 1883;
+  const char* WIFI_SSID = "CHANGE_WIFI_SSID";
+  const char* WIFI_PASSWORD = "CHANGE_WIFI_PASSWORD";
+  const char* MQTT_HOST = "192.168.1.109";
+  const int MQTT_PORT = 1883;
 
 WiFiClient espClient;
 PubSubClient client(espClient);

@@ -14,6 +14,7 @@ const unsigned long WIFI_RETRY_MS = 10000;
 const unsigned long ANIM_STEP_MS = 75;
 const unsigned long PAGE_DURATION_MS = 4000;
 const unsigned long ICON_SWAP_MS = 350;
+const int16_t CHAR_ADVANCE_PX = 5;
 
 const uint8_t MATRIX_PIN = D5;
 const uint8_t MATRIX_WIDTH = 38;
@@ -78,6 +79,7 @@ void drawCloud(uint16_t color);
 void drawSun(uint16_t color);
 void drawRain(uint16_t color, bool phase);
 void drawStorm(uint16_t color, bool phase);
+int16_t textWidthPx(const String& text);
 
 void setup() {
   Serial.begin(115200);
@@ -283,6 +285,10 @@ uint16_t matrixColor(const RgbColor& color) {
   return matrix.Color(color.r, color.g, color.b);
 }
 
+int16_t textWidthPx(const String& text) {
+  return text.length() * CHAR_ADVANCE_PX;
+}
+
 void drawCloud(uint16_t color) {
   matrix.fillCircle(4, 4, 2, color);
   matrix.fillCircle(7, 4, 3, color);
@@ -370,12 +376,14 @@ void displayTick() {
   drawForecastIcon(currentPayload.forecastIcon, matrixColor(currentPayload.color), iconPhase);
 
   matrix.setTextColor(matrixColor(currentPayload.color));
-  matrix.setCursor(scrollX, 1);
-  matrix.print(text);
+  for (size_t i = 0; i < text.length(); i++) {
+    matrix.setCursor(scrollX + (i * CHAR_ADVANCE_PX), 1);
+    matrix.print(text[i]);
+  }
   matrix.show();
 
   scrollX--;
-  if (scrollX < -(int16_t)w - 2) {
+  if (scrollX < -textWidthPx(text)) {
     scrollX = MATRIX_WIDTH;
   }
 }

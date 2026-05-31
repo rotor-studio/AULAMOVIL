@@ -2,11 +2,21 @@
 
 ## Network Mode (Current)
 - Wi-Fi `NUBEMOVIL` on `wlan0`
-- Current validated Pi IP on that LAN: `192.168.1.104`
+- Current validated Pi IP on that LAN: `192.168.1.109`
 - eth0 reserved for the CCTV camera on a direct link with static addressing.
 - Pi on camera network: 192.168.50.2/24
 - Camera IP: 192.168.50.10/24
 - Sensor.Community currently expected at: `http://192.168.1.110/data.json`
+
+## Reserved Devices
+- `192.168.1.109` Pi `AULAMOVIL`
+- `192.168.1.110` Sensor.Community / PM
+- `192.168.1.108` relay ESP for vapor and fan
+- `192.168.1.100` wind + direction + ground BME
+- `192.168.1.101` light / UV
+- `192.168.1.102` vertical LED sign
+- `192.168.1.103` rain / pluviometer
+- `192.168.1.105` horizontal LED sign
 
 ## Camera (RTSP + HLS)
 We convert RTSP to HLS locally with ffmpeg.
@@ -49,6 +59,9 @@ Payload (JSON):
 - GET /api/stream (SSE)
 - GET /api/camera
 - GET /api/sign/latest
+- GET /api/fx/state
+- POST /api/fx/text-color
+- POST /api/fx/effect
 - GET /api/vapor/state
 - POST /api/vapor/set
 - GET /api/fan/state
@@ -66,11 +79,38 @@ Payload (JSON):
 
 ## LED Signs
 - Main sign endpoint:
-  - `http://<pi-ip>:8000/api/sign/latest`
+  - `http://192.168.1.109:8000/api/sign/latest`
 - Horizontal sign sketch:
-  - `esp8266/cartel_pronostico`
+  - `LEDPANEL/cartel_nubemovil_64x8`
 - Vertical sign sketch:
-  - `esp8266/cartel_pronostico_vertical`
+  - `esp8266/cartel_pronostico_vertical_rain`
+- Horizontal sign details:
+  - custom `5x6` font
+  - `1 px` free above and `1 px` free below
+  - `BOOT` shown for `60000 ms` before first Wi-Fi attempt
+- Vertical sign details:
+  - text-only when `effect = none`
+  - effect-only for `rain`, `dust`, `lightning`
+  - `BOOT` shown for `60000 ms` before first Wi-Fi attempt
+
+## FX
+- Dashboard tab `FX` can force:
+  - text color
+  - sign effect
+- Current effect modes:
+  - `none`
+  - `rain`
+  - `dust`
+  - `lightning`
+- Current text color modes:
+  - `auto`
+  - `white`
+  - `green`
+  - `yellow`
+  - `orange`
+  - `red`
+  - `blue`
+  - `purple`
 
 ## Access
 Dashboard: http://<pi-ip>:8000/
@@ -79,6 +119,7 @@ Dashboard: http://<pi-ip>:8000/
 - Relay ESP IP is DHCP-driven unless reserved in the router.
 - Ground BME values arrive through `meteo/env/temperature_c` and `meteo/env/humidity`.
 - GPS can remain stale even when `/dev/ttyACM0` is present if the receiver has no valid fix.
+- Sketches committed to git should keep placeholder Wi-Fi credentials and tokens.
 
 ## Install
 `
