@@ -1649,11 +1649,11 @@ def index():
       <div id=\"dashRain\" class=\"card\"></div>
       <div id=\"dashBme\" class=\"card\"></div>
       <div id=\"dashLight\" class=\"card\"></div>
-      <div id=\"dashPower\" class=\"card\"></div>
       <div id=\"dashAir\" class=\"card\"></div>
       <div id=\"dashGps\" class=\"card\"></div>
       <div id=\"dashCam\" class=\"card\"></div>
       <div id=\"dashForecast\" class=\"card forecast-card\"></div>
+      <div id=\"dashPower\" class=\"card\"></div>
     </div>
   </div>
 
@@ -1805,7 +1805,75 @@ def index():
       <div class=\"timelapse-actions\">
         <button onclick=\"toggleSoundGlobal(true)\">Play General</button>
         <button onclick=\"toggleSoundGlobal(false)\">Stop General</button>
-        <button onclics=\"mono\">loop</span>.</p>
+        <button onclick=\"stopAllSound()\">Cortar Sonido</button>
+        <button onclick=\"playChirpTest()\">Probar Chirp</button>
+      </div>
+      <div class=\"timelapse-actions\" style=\"margin-top:8px;\">
+        <button onclick=\"setSoundOutput('usb')\">Salida USB</button>
+        <span id=\"soundOutputUsbStatus\" class=\"dot offline\"></span>
+        <button onclick=\"setSoundOutput('jack')\">Salida Jack</button>
+        <span id=\"soundOutputJackStatus\" class=\"dot offline\"></span>
+      </div>
+      <div id=\"soundEngineStatus\" style=\"margin-top:8px; opacity:0.85;\">Estado: --</div>
+    </div>
+
+    <div class=\"card\">
+      <h3>Subir sonido</h3>
+      <div class=\"timelapse-actions\">
+        <input id=\"soundUploadFile\" type=\"file\" accept=\".wav,.mp3,.ogg\" />
+        <button onclick=\"uploadSoundFile()\">Subir archivo</button>
+      </div>
+      <div id=\"soundUploadStatus\" style=\"margin-top:8px; opacity:0.85;\"></div>
+    </div>
+
+    <div class=\"card\">
+      <h3>Nueva regla</h3>
+      <div class=\"timelapse-controls\">
+        <label>Nombre: <input id=\"soundRuleName\" type=\"text\" value=\"Regla sonido\" /></label>
+        <label>Sensor:
+          <select id=\"soundMetricSelect\"></select>
+        </label>
+        <label>Sonido:
+          <select id=\"soundFileSelect\"></select>
+        </label>
+        <label>Modo:
+          <select id=\"soundModeSelect\">
+            <option value=\"once\">Una vez</option>
+            <option value=\"loop\">Loop</option>
+          </select>
+        </label>
+        <label>Min valor: <input id=\"soundMinValue\" type=\"number\" step=\"any\" /></label>
+        <label>Max valor: <input id=\"soundMaxValue\" type=\"number\" step=\"any\" /></label>
+        <label>Cambio mínimo: <input id=\"soundMinDelta\" type=\"number\" step=\"any\" value=\"1\" /></label>
+        <label>Cooldown (s): <input id=\"soundCooldown\" type=\"number\" step=\"1\" value=\"10\" /></label>
+        <button onclick=\"addSoundRule()\">Añadir regla</button>
+      </div>
+      <div style=\"margin-top:8px; opacity:0.85;\">Una regla se dispara cuando el sensor entra en rango y cambia al menos el valor indicado.</div>
+    </div>
+
+    <div class=\"card\">
+      <h3>Sonidos disponibles</h3>
+      <div id=\"soundFilesList\"></div>
+    </div>
+
+    <div class=\"card\">
+      <h3>Reglas activas</h3>
+      <div id=\"soundRulesList\"></div>
+    </div>
+
+    <div class=\"card\">
+      <h3>API de sonido</h3>
+      <div style=\"opacity:0.9;\">
+        <p>Esta pestaña usa una API simple para controlar sonidos, subir audios y asociarlos a sensores.</p>
+        <p><strong>GET</strong> <span class=\"mono\">/api/sound/state</span>: devuelve reglas, sonidos, motor y métricas disponibles.</p>
+        <p><strong>POST</strong> <span class=\"mono\">/api/sound/global</span>: activa o para el motor global de sonido.</p>
+        <p><strong>POST</strong> <span class=\"mono\">/api/sound/stop</span>: corta la reproducción actual.</p>
+        <p><strong>POST</strong> <span class=\"mono\">/api/sound/test/chirp</span>: lanza el chirp de prueba.</p>
+        <p><strong>POST</strong> <span class=\"mono\">/api/sound/test/file</span>: reproduce un archivo subido, en una vez o en loop.</p>
+        <p><strong>POST</strong> <span class=\"mono\">/api/sound/upload</span>: sube un <span class=\"mono\">wav</span>, <span class=\"mono\">mp3</span> u <span class=\"mono\">ogg</span>.</p>
+        <p><strong>POST</strong> <span class=\"mono\">/api/sound/rules</span>: guarda la lista completa de reglas.</p>
+        <p><strong>DELETE</strong> <span class=\"mono\">/api/sound/rules/&lt;id&gt;</span>: elimina una regla.</p>
+        <p>Las reglas usan: sensor, sonido, rango mínimo/máximo, cambio mínimo, cooldown y modo <span class=\"mono\">once</span> o <span class=\"mono\">loop</span>.</p>
       </div>
     </div>
   </div>
@@ -2949,6 +3017,25 @@ async function renderForecast(data) {{
         ['UV Raw', uvRaw ? `${{uvRaw.value}} ${{metricUnit('uv_raw', uvRaw.unit)}}` : '--'],
         ['Voltaje UV', uvVoltage ? `${{uvVoltage.value}} ${{metricUnit('uv_voltage_v', uvVoltage.unit)}}` : '--']
       ], lightTs, STATUS_MAX_AGE_SEC.light_mcu);
+
+      try {{
+        const powerRes = await fetch('/api/pi/health');
+        const power = await powerRes.json();
+        setCard(document.getElementById('dashPower'), 'Alimentación Pi', [
+          ['Undervoltage actual', power.current_undervoltage ? 'SI' : 'NO'],
+          ['Undervoltage histórico', power.historical_undervoltage ? 'SI' : 'NO'],
+          ['Throttling actual', power.current_throttled ? 'SI' : 'NO'],
+          ['Throttling histórico', power.historical_throttled ? 'SI' : 'NO'],
+          ['Frecuencia limitada', power.current_freq_capped ? 'SI' : 'NO'],
+          ['Temperatura SoC', power.temperature_c != null ? `${{power.temperature_c.toFixed(1)}} C` : '--'],
+          ['Voltaje core', power.core_voltage_v != null ? `${{power.core_voltage_v.toFixed(3)}} V` : '--'],
+          ['Registro raw', power.throttled_raw || '--']
+        ], power.ts || 0, 120);
+      }} catch (_err) {{
+        setCard(document.getElementById('dashPower'), 'Alimentación Pi', [
+          ['Estado', 'NO DISPONIBLE']
+        ], 0, 120);
+      }}
 
       const pm10 = getMetric(data, 'pm10_ugm3');
       const pm25 = getMetric(data, 'pm2_5_ugm3');
