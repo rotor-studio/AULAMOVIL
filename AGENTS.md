@@ -12,7 +12,7 @@
 - `rotor-web`: FastAPI + Uvicorn on port `8000`
 - `rotor-collector`: MQTT, GPS, Sensor.Community and SQLite ingestion
 - `rotor-camera`: RTSP to HLS bridge
-- `rotor-cloud-bridge`: optional sender from the Pi to MOVILCLOUD
+- `rotor-cloud-bridge`: optional sender from the Pi to the external NUBEMOVIL receiver
 - Relay controller:
   - ESP8266 dual relay for `vapor` and `fan`
 - LED sign clients:
@@ -29,8 +29,9 @@
 
 ## MOVILCLOUD App In Repo
 - Branch `movilcloud-site` also contains a PHP receiver app in `/movilcloud`
-- Latest validated branch commit:
-  - `944e3c1`
+- Current validated state:
+  - the bridge publishes `TEMP PI` from `pi_health/temperature_c`
+  - `display` stays for cartels while `web_display` is used by the public web entry
 - Main files:
   - `/movilcloud/public/index.php`
   - `/movilcloud/public/api/ingest.php`
@@ -221,6 +222,11 @@
   - committed sketches must keep placeholder Wi-Fi credentials and tokens
   - real SSID, password and relay tokens stay outside git
 
+## Local 24h Interpretation
+- Phrase selection depends on the current logical state and a state-derived seed.
+- If a state stays stable, phrase variants may rotate every 180 seconds.
+- If a relevant sensor change alters the state, the phrase can change immediately.
+
 ## Services
 - `rotor-web`
   - working dir: `/opt/rotor-meteo`
@@ -235,8 +241,9 @@
   - working dir: `/opt/rotor-meteo`
   - exec: `/opt/rotor-meteo/.venv/bin/python /opt/rotor-meteo/scripts/cloud_bridge.py`
   - reads local `http://127.0.0.1:8000/api/latest`
+  - reads local `http://127.0.0.1:8000/api/pi/health` for `TEMP PI`
   - reads latest camera frame from `/opt/rotor-meteo/data/hls/latest.jpg`
-  - posts to the external MOVILCLOUD receiver
+  - posts to the external NUBEMOVIL receiver
 
 ## Enable On A New Pi
 1. Create user `aulamovil` if not present.
@@ -285,7 +292,7 @@
   - `cloud_bridge.frame_path`
   - `cloud_bridge.include_frame`
   - `cloud_bridge.metrics`
-- Current metric set sent to MOVILCLOUD:
+- Current metric set sent to the external NUBEMOVIL receiver:
   - `wind_esp8266/wind_direction_deg -> Direccion`
   - `wind_esp8266/wind_speed_ms -> Velocidad`
   - `light_mcu/light_lux -> Luminosidad`
@@ -297,7 +304,7 @@
   - `bme280_ground/rh_ground_pct -> Hum suelo`
   - `sensor_community_1/pm2_5_ugm3 -> PM2.5`
   - `sensor_community_1/pm10_ugm3 -> PM10`
-  - `static_value 12.4 -> Voltaje`
+  - `pi_health/temperature_c -> TEMP PI`
 - Bridge behavior:
   - sends JSON only
   - includes `frame_base64` when the latest frame file has changed

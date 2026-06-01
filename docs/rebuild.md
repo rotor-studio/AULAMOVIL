@@ -149,6 +149,7 @@
   - `https://www.rotor-studio.net/nubemovil/cloud_ingest.php`
 - Reads from the Pi:
   - `http://127.0.0.1:8000/api/latest`
+  - `http://127.0.0.1:8000/api/pi/health` for `TEMP PI`
   - `/opt/rotor-meteo/data/hls/latest.jpg`
 - Runtime-only secret:
   - `cloud_bridge.token`
@@ -157,6 +158,11 @@
   - `https://www.rotor-studio.net/nubemovil/cloud_frame.php`
 - Public branded entry currently used:
   - `https://www.rotor-studio.net/nubemovil/nubemovil.php`
+
+## Local 24h Interpretation
+- Phrase selection depends on the current logical state and a state-derived seed.
+- If a state stays stable, phrase variants may rotate every 180 seconds.
+- If a relevant sensor change alters the state, the phrase can change immediately.
 
 ## Relay Control
 - Web control lives inside `rotor-web`
