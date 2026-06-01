@@ -3,3 +3,4 @@ __pycache__/
 *.pyc
 *.db
 /data/
+esp8266/**/local_config.h
