@@ -120,6 +120,8 @@ Dashboard: http://<pi-ip>:8000/
 - Ground BME values arrive through `meteo/env/temperature_c` and `meteo/env/humidity`.
 - GPS can remain stale even when `/dev/ttyACM0` is present if the receiver has no valid fix.
 - Sketches committed to git should keep placeholder Wi-Fi credentials and tokens.
+- The cloud bridge now publishes `TEMP PI` from `/api/pi/health`.
+- The local 24h interpretation keeps a stable phrase for 180 seconds and can switch immediately when the state changes.
 
 ## Install
 `
