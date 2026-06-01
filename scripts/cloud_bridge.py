@@ -148,6 +148,27 @@ def build_display(sign_state):
     }
 
 
+def build_web_display(sign_state):
+    interpretation = sign_state.get("interpretation") if isinstance(sign_state, dict) else {}
+    if not isinstance(interpretation, dict):
+        interpretation = {}
+    message = interpretation.get("message")
+    state = interpretation.get("state")
+    if not isinstance(message, dict):
+        message = {}
+    if not isinstance(state, dict):
+        state = {}
+    phrase = str(message.get("phrase") or "").strip()
+    summary = str(state.get("summary") or "").strip()
+    if phrase:
+        return {
+            "headline": phrase,
+            "line1": "",
+            "line2": "",
+        }
+    return build_display(sign_state)
+
+
 def build_payload(config, latest_map, sign_state, last_frame_mtime):
     bridge = config.get("cloud_bridge", {})
     specs = bridge.get("metrics") or DEFAULT_METRICS
@@ -169,6 +190,7 @@ def build_payload(config, latest_map, sign_state, last_frame_mtime):
         "location": build_location(latest_map),
         "metrics": build_metrics(latest_map, specs),
         "display": build_display(sign_state),
+        "web_display": build_web_display(sign_state),
         "frame_base64": frame_base64,
         "source_ts": datetime.now(timezone.utc).isoformat(),
     }, frame_mtime

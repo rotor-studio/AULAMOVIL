@@ -22,7 +22,7 @@ gps:
   min_interval_sec: 1.0
 sensor_community:
   enabled: true
-  url: http://192.168.0.171/data.json
+  url: http://192.168.1.110/data.json
   interval_sec: 60
   device_id: sensor_community_1
 cloud_bridge:

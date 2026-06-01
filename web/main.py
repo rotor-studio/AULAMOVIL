@@ -1,4 +1,6 @@
 import asyncio
+import csv
+import hashlib
 import json
 import os
 import shutil
@@ -7,6 +9,7 @@ import subprocess
 import tempfile
 import threading
 import time
+import unicodedata
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -65,6 +68,29 @@ def parse_timestamp(value, default=None):
     return default
 
 
+def text_for_sign(value):
+    text = str(value or "")
+    replacements = {
+        "’": "'",
+        "‘": "'",
+        "“": '"',
+        "”": '"',
+        "«": '"',
+        "»": '"',
+        "–": "-",
+        "—": "-",
+        "…": "...",
+        "º": "o",
+        "ª": "a",
+    }
+    for source, target in replacements.items():
+        text = text.replace(source, target)
+    text = unicodedata.normalize("NFKD", text)
+    text = "".join(ch for ch in text if not unicodedata.combining(ch))
+    text = text.encode("ascii", "ignore").decode("ascii")
+    return " ".join(text.split())
+
+
 CONFIG = load_config()
 REGISTRY = load_yaml("/opt/rotor-meteo/config/registry.yaml")
 DB_PATH = CONFIG["storage"]["sqlite_path"]
@@ -76,6 +102,10 @@ CAMERA_STALE_SEC = float(CONFIG.get("camera", {}).get("stale_sec", 20))
 SOUND_DIR = "/opt/rotor-meteo/data/sounds"
 SOUND_CONFIG_PATH = "/opt/rotor-meteo/data/sound_config.json"
 FX_CONFIG_PATH = "/opt/rotor-meteo/data/fx_config.json"
+INTERPRETATION_MESSAGES_PATH = CONFIG.get("interpretation", {}).get(
+    "messages_csv",
+    "/opt/rotor-meteo/data/messages/refranes_meteorologicos_asturias.csv",
+)
 DEFAULT_USB_AUDIO_DEVICE = "plughw:CARD=CD002,DEV=0"
 DEFAULT_JACK_AUDIO_DEVICE = "plughw:CARD=Headphones,DEV=0"
 
@@ -354,6 +384,376 @@ def sample_before(points, seconds_ago):
         else:
             break
     return candidate or points[0]
+
+
+_message_cache = {"path": None, "mtime": None, "rows": []}
+_message_cache_lock = threading.Lock()
+
+
+def metric_float(item):
+    if not item:
+        return None
+    try:
+        return float(item["value"])
+    except (TypeError, ValueError):
+        return None
+
+
+def load_interpretation_messages():
+    path = INTERPRETATION_MESSAGES_PATH
+    if not os.path.exists(path):
+        return []
+    mtime = os.path.getmtime(path)
+    with _message_cache_lock:
+        if _message_cache["path"] == path and _message_cache["mtime"] == mtime:
+            return list(_message_cache["rows"])
+
+        rows = []
+        with open(path, "r", encoding="utf-8-sig", newline="") as f:
+            for row in csv.DictReader(f):
+                condition = (row.get("condicion_logica") or "").strip()
+                phrase = (row.get("frase") or "").strip()
+                if not condition or not phrase:
+                    continue
+                try:
+                    priority = int(row.get("prioridad_1_5") or 1)
+                except ValueError:
+                    priority = 1
+                rows.append({
+                    "category": (row.get("categoria") or "").strip(),
+                    "sensor_parameters": (row.get("parametro_sensor") or "").strip(),
+                    "condition": condition,
+                    "phrase": phrase,
+                    "type": (row.get("tipo") or "").strip(),
+                    "source": (row.get("procedencia") or "").strip(),
+                    "source_url": (row.get("fuente_url") or "").strip(),
+                    "notes": (row.get("notas_de_uso") or "").strip(),
+                    "priority": max(1, min(priority, 5)),
+                })
+        _message_cache.update({"path": path, "mtime": mtime, "rows": rows})
+        return list(rows)
+
+
+def confidence_from_score(score, observed_count):
+    if observed_count < 3 or score < 3:
+        return "baja"
+    if score >= 8 and observed_count >= 5:
+        return "alta"
+    return "media"
+
+
+def choose_message(rows, condition, seed_text):
+    candidates = [row for row in rows if row["condition"] == condition]
+    if not candidates:
+        candidates = [row for row in rows if row["condition"] in ("mensaje_general", "uso_general_refranero")]
+    if not candidates:
+        return None
+    candidates.sort(key=lambda row: (-row["priority"], row["phrase"]))
+    top_priority = candidates[0]["priority"]
+    best = [row for row in candidates if row["priority"] == top_priority]
+    digest = hashlib.sha1(seed_text.encode("utf-8")).hexdigest()
+    return best[int(digest[:8], 16) % len(best)]
+
+
+def compute_local_24h_interpretation():
+    latest = get_latest_map()
+    messages = load_interpretation_messages()
+
+    pressure = get_metric(latest, "pressure_hpa", "sensor_community_1")
+    humidity = get_metric(latest, "rh_pct", "sensor_community_1")
+    temperature = get_metric(latest, "temp_c", "sensor_community_1")
+    wind = get_metric(latest, "wind_speed_ms", "wind_esp8266")
+    rain_rate = get_metric(latest, "rain_rate_mmh", "rain_node_mcu")
+    rain_total = get_metric(latest, "rain_mm_total", "rain_node_mcu") or get_metric(latest, "rain_mm", "rain_node_mcu")
+    light = get_metric(latest, "light_lux", "light_mcu")
+    uv_raw = get_metric(latest, "uv_raw", "light_mcu")
+    uv_voltage = get_metric(latest, "uv_voltage_v", "light_mcu")
+    pm10 = get_metric(latest, "pm10_ugm3", "sensor_community_1")
+    pm25 = get_metric(latest, "pm2_5_ugm3", "sensor_community_1")
+    ground_temp = get_metric(latest, "temp_ground_c", "bme280_ground")
+    ground_humidity = get_metric(latest, "rh_ground_pct", "bme280_ground")
+
+    pressure_series = get_history("pressure_hpa", "sensor_community_1")
+    humidity_series = get_history("rh_pct", "sensor_community_1")
+    rain_series = get_history("rain_mm_total", "rain_node_mcu")
+    light_series = get_history("light_lux", "light_mcu")
+    pm25_series = get_history("pm2_5_ugm3", "sensor_community_1")
+
+    pressure_prev = sample_before(pressure_series, 6 * 3600)
+    humidity_prev = sample_before(humidity_series, 6 * 3600)
+    rain_prev = sample_before(rain_series, 6 * 3600)
+    light_prev = sample_before(light_series, 3 * 3600)
+    pm25_prev = sample_before(pm25_series, 6 * 3600)
+
+    pressure_val = metric_float(pressure)
+    humidity_val = metric_float(humidity)
+    temp_val = metric_float(temperature)
+    wind_val = metric_float(wind)
+    rain_rate_val = metric_float(rain_rate)
+    rain_total_val = metric_float(rain_total)
+    light_val = metric_float(light)
+    uv_raw_val = metric_float(uv_raw)
+    uv_voltage_val = metric_float(uv_voltage)
+    pm10_val = metric_float(pm10)
+    pm25_val = metric_float(pm25)
+    ground_temp_val = metric_float(ground_temp)
+    ground_humidity_val = metric_float(ground_humidity)
+
+    pressure_trend = pressure_val - metric_float(pressure_prev) if pressure_val is not None and pressure_prev else None
+    humidity_trend = humidity_val - metric_float(humidity_prev) if humidity_val is not None and humidity_prev else None
+    rain_delta = rain_total_val - metric_float(rain_prev) if rain_total_val is not None and rain_prev else None
+    light_trend = light_val - metric_float(light_prev) if light_val is not None and light_prev else None
+    pm25_trend = pm25_val - metric_float(pm25_prev) if pm25_val is not None and pm25_prev else None
+
+    scores = {}
+    evidence = {}
+
+    def add(condition, points, reason):
+        scores[condition] = scores.get(condition, 0.0) + points
+        evidence.setdefault(condition, []).append(reason)
+
+    now_dt = datetime.now()
+    month = now_dt.month
+
+    if rain_rate_val is not None:
+        if rain_rate_val >= 8:
+            add("lluvia_fuerte", 6, f"intensidad de lluvia {rain_rate_val:.2f} mm/h")
+        elif rain_rate_val >= 2:
+            add("dia_lluvioso", 5, f"lluvia activa {rain_rate_val:.2f} mm/h")
+            add("lluvia_continua", 3, f"lluvia activa {rain_rate_val:.2f} mm/h")
+        elif rain_rate_val >= 0.1:
+            add("lluvia_suave", 5, f"lluvia suave {rain_rate_val:.2f} mm/h")
+            add("llovizna_fina", 3, f"lluvia débil {rain_rate_val:.2f} mm/h")
+    if rain_delta is not None and rain_delta >= 0.2:
+        add("lluvia_beneficiosa", 2, f"acumulado reciente +{rain_delta:.2f} mm")
+        add("lluvia_suave_y_humedad_alta", 2, f"lluvia reciente +{rain_delta:.2f} mm")
+        if temp_val is not None and temp_val <= 8:
+            add("lluvia_y_frio", 4, f"lluvia reciente y {temp_val:.1f} C")
+        if light_val is not None and light_val >= 900:
+            add("sol_despues_de_lluvia", 4, f"luz alta tras lluvia reciente")
+            add("radiacion_alta_tras_lluvia", 2, f"luz alta tras lluvia reciente")
+
+    if humidity_val is not None:
+        if humidity_val >= 90:
+            add("humedad_alta", 4, f"humedad {humidity_val:.0f} %")
+            add("humedad_muy_alta_sin_lluvia", 2, f"humedad {humidity_val:.0f} %")
+            add("niebla_y_humedad_alta", 2, f"humedad muy alta")
+        elif humidity_val >= 78:
+            add("humedad_alta", 3, f"humedad {humidity_val:.0f} %")
+            add("ambiente_pegajoso", 2, f"humedad {humidity_val:.0f} %")
+        elif humidity_val <= 45:
+            add("humedad_baja", 3, f"humedad {humidity_val:.0f} %")
+            add("frio_seco" if temp_val is not None and temp_val <= 10 else "viento_seco", 1, f"humedad baja")
+    if humidity_trend is not None:
+        if humidity_trend >= 8:
+            add("humedad_subiendo", 3, f"humedad sube {humidity_trend:.1f} puntos en 6 h")
+        elif humidity_trend <= -8:
+            add("humedad_bajando", 3, f"humedad baja {abs(humidity_trend):.1f} puntos en 6 h")
+
+    if pressure_val is not None:
+        if pressure_val <= 1002:
+            add("presion_muy_baja", 5, f"presión {pressure_val:.1f} hPa")
+        elif pressure_val <= 1008:
+            add("presion_baja_y_humedad_alta", 2, f"presión baja {pressure_val:.1f} hPa")
+        elif pressure_val >= 1022:
+            add("alta_presion_y_sol", 2, f"presión alta {pressure_val:.1f} hPa")
+        else:
+            add("presion_estable", 1, f"presión {pressure_val:.1f} hPa")
+    if pressure_trend is not None:
+        if pressure_trend <= -3:
+            add("presion_bajando_rapido", 5, f"presión baja {abs(pressure_trend):.1f} hPa en 6 h")
+            add("nubosidad_creciente", 2, f"presión en descenso")
+            if humidity_val is not None and humidity_val >= 75:
+                add("presion_baja_y_humedad_alta", 4, f"presión baja y humedad alta")
+                add("nubes_densas_y_presion_baja", 3, f"presión baja y humedad alta")
+        elif pressure_trend >= 3:
+            add("presion_subiendo", 5, f"presión sube {pressure_trend:.1f} hPa en 6 h")
+            add("alta_presion_y_sol", 2, f"presión subiendo")
+        else:
+            add("presion_estable", 2, f"presión estable en 6 h")
+
+    if temp_val is not None:
+        if temp_val <= 0:
+            add("temperatura_bajo_cero", 5, f"temperatura {temp_val:.1f} C")
+            add("hielo", 3, f"temperatura bajo cero")
+        elif temp_val <= 4:
+            add("helada_matinal", 3, f"temperatura {temp_val:.1f} C")
+            add("frio_humedo" if humidity_val and humidity_val >= 75 else "frio_seco", 2, f"frío local")
+        elif temp_val <= 9:
+            add("frio_humedo" if humidity_val and humidity_val >= 75 else "frio_seco", 3, f"temperatura {temp_val:.1f} C")
+        elif temp_val >= 30:
+            add("calor_anomalo", 4, f"temperatura {temp_val:.1f} C")
+            add("sol_y_calor", 2, f"temperatura alta")
+        elif temp_val >= 25:
+            add("sol_fuerte_o_calor", 3, f"temperatura {temp_val:.1f} C")
+            if humidity_val is not None and humidity_val <= 50:
+                add("calor_y_baja_humedad", 3, f"calor y humedad baja")
+
+    if wind_val is not None:
+        if wind_val >= 14:
+            add("viento_muy_fuerte", 6, f"viento {wind_val:.1f} m/s")
+            add("rachas", 3, f"viento fuerte")
+        elif wind_val >= 8:
+            add("viento_fuerte", 5, f"viento {wind_val:.1f} m/s")
+            add("viento_persistente", 2, f"viento moderado")
+        elif wind_val >= 3:
+            add("brisa_suave", 2, f"brisa {wind_val:.1f} m/s")
+        if rain_rate_val is not None and rain_rate_val >= 0.1 and wind_val >= 5:
+            add("lluvia_y_viento", 5, f"lluvia y viento {wind_val:.1f} m/s")
+        if pressure_val is not None and pressure_val <= 1008 and wind_val >= 6:
+            add("presion_baja_y_viento", 4, f"presión baja y viento")
+
+    if light_val is not None:
+        if light_val >= 900:
+            add("dia_luminoso", 4, f"luminosidad {light_val:.0f} lux")
+            add("sol_suave", 3, f"luz alta calibrada")
+        elif light_val >= 120:
+            add("sol_suave", 2, f"luz interior/ambiente {light_val:.0f} lux")
+            add("claros_entre_nubes", 2, f"luz moderada")
+        elif light_val <= 10:
+            add("cielo_gris_estable", 2, f"sensores casi a oscuras {light_val:.0f} lux")
+            if humidity_val is not None and humidity_val >= 80:
+                add("niebla_densa_o_dia_gris", 3, f"luz baja y humedad alta")
+                add("cielo_bajo_cubierto", 2, f"luz baja y humedad alta")
+        else:
+            add("cielo_gris_estable", 1, f"luminosidad baja {light_val:.0f} lux")
+    if light_trend is not None:
+        if light_trend >= 8000:
+            add("radiacion_subiendo", 2, "luminosidad subiendo")
+        elif light_trend <= -8000:
+            add("radiacion_bajando", 2, "luminosidad bajando")
+
+    if uv_raw_val is not None:
+        uv_evidence = f"UV raw {uv_raw_val:.0f}"
+        if uv_voltage_val is not None:
+            uv_evidence += f" ({uv_voltage_val:.2f} V)"
+        uv_sensor_delta = abs(uv_raw_val - 325.0)
+        if uv_sensor_delta <= 8:
+            add("radiacion_baja", 0.25, f"{uv_evidence}; sensor UV sin variación útil")
+        elif light_val is not None and light_val >= 900 and uv_sensor_delta >= 40:
+            add("uv_medio", 1, f"{uv_evidence}; pendiente de recalibrar")
+
+    if pm25_val is not None or pm10_val is not None:
+        if (pm25_val is not None and pm25_val > 55) or (pm10_val is not None and pm10_val > 100):
+            add("aire_malo", 5, "partículas altas")
+            add("humo_o_combustion", 2, "partículas muy altas")
+        elif (pm25_val is not None and pm25_val > 35) or (pm10_val is not None and pm10_val > 50):
+            add("aire_malo", 4, "partículas elevadas")
+            if wind_val is not None and wind_val < 2:
+                add("pm_alta_y_poco_viento", 3, "partículas altas y poco viento")
+        elif (pm25_val is not None and pm25_val > 12) or (pm10_val is not None and pm10_val > 20):
+            add("aire_regular_o_pm_alta", 3, "aire regular")
+        else:
+            add("aire_limpio", 3, "partículas bajas")
+    if pm25_trend is not None:
+        if pm25_trend >= 5:
+            add("particulas_subiendo", 2, f"PM2.5 sube {pm25_trend:.1f}")
+        elif pm25_trend <= -5:
+            add("particulas_bajando", 2, f"PM2.5 baja {abs(pm25_trend):.1f}")
+
+    if ground_humidity_val is not None and ground_humidity_val >= 80:
+        add("rocio", 2, f"humedad de suelo/sombra {ground_humidity_val:.0f} %")
+        add("condensacion", 1, f"humedad de suelo/sombra alta")
+    if ground_temp_val is not None and ground_temp_val <= 1:
+        add("helada_matinal", 2, f"temperatura suelo {ground_temp_val:.1f} C")
+
+    if month in (12, 1, 2) and temp_val is not None:
+        if temp_val <= 5:
+            add("enero_febrero_frio" if month in (1, 2) else "frio_inesperado", 1, "contexto invernal")
+        elif temp_val >= 14:
+            add("invierno_suave_anomalo", 1, "temperatura suave en invierno")
+    if month in (3, 4, 5) and rain_delta is not None and rain_delta >= 0.2:
+        add("primavera_lluviosa", 1, "lluvia en primavera")
+    if month in (9, 10, 11) and humidity_val is not None and humidity_val >= 80:
+        add("otoño_humedo", 1, "humedad alta en otoño")
+
+    if not scores:
+        add("mensaje_general", 1, "sin suficientes señales medibles")
+
+    ranked = sorted(scores.items(), key=lambda item: item[1], reverse=True)
+    state_id, state_score = ranked[0]
+    observed_items = [pressure_val, humidity_val, temp_val, wind_val, rain_rate_val, rain_total_val, light_val, uv_raw_val, uv_voltage_val, pm10_val, pm25_val, ground_temp_val, ground_humidity_val]
+    observed_count = sum(1 for value in observed_items if value is not None)
+    seed = f"{state_id}:{int(time.time() // 1800)}"
+    message = choose_message(messages, state_id, seed)
+
+    fallback_text = "La estación lee el tiempo de cerca: hacen falta más señales para afinar el mensaje."
+    phrase = message["phrase"] if message else fallback_text
+    reasons = evidence.get(state_id, [])
+    summary = reasons[0] if reasons else "estado local calculado con las señales disponibles"
+    detail = " / ".join(reasons[:3]) if reasons else "Sin suficientes señales específicas."
+    line1 = phrase
+    line2 = summary
+    if len(line1) > 96:
+        line1 = line1[:93] + "..."
+    if len(line2) > 64:
+        line2 = line2[:61] + "..."
+
+    source_ts = max([
+        item["ts"] for item in [pressure, humidity, temperature, wind, rain_rate, rain_total, light, uv_raw, uv_voltage, pm10, pm25, ground_temp, ground_humidity] if item
+    ], default=0)
+
+    return {
+        "ok": True,
+        "ts": time.time(),
+        "source_ts": source_ts,
+        "horizon": "24h",
+        "messages": {
+            "path": INTERPRETATION_MESSAGES_PATH,
+            "loaded": len(messages),
+        },
+        "state": {
+            "id": state_id,
+            "score": round(state_score, 2),
+            "confidence": confidence_from_score(state_score, observed_count),
+            "summary": summary,
+            "detail": detail,
+            "evidence": reasons,
+        },
+        "message": message or {
+            "category": "Sistema",
+            "sensor_parameters": "",
+            "condition": state_id,
+            "phrase": fallback_text,
+            "type": "fallback",
+            "source": "",
+            "source_url": "",
+            "notes": "",
+            "priority": 1,
+        },
+        "ranked_conditions": [
+            {
+                "condition": condition,
+                "score": round(score, 2),
+                "evidence": evidence.get(condition, [])[:3],
+            }
+            for condition, score in ranked[:8]
+        ],
+        "metrics": {
+            "temp_c": temp_val,
+            "rh_pct": humidity_val,
+            "pressure_hpa": pressure_val,
+            "pressure_trend_6h": pressure_trend,
+            "humidity_trend_6h": humidity_trend,
+            "wind_speed_ms": wind_val,
+            "rain_rate_mmh": rain_rate_val,
+            "rain_mm_total": rain_total_val,
+            "rain_delta_6h": rain_delta,
+            "light_lux": light_val,
+            "uv_raw": uv_raw_val,
+            "uv_voltage_v": uv_voltage_val,
+            "pm10_ugm3": pm10_val,
+            "pm2_5_ugm3": pm25_val,
+            "ground_temp_c": ground_temp_val,
+            "ground_rh_pct": ground_humidity_val,
+        },
+        "display": {
+            "headline": "Interpretación local 24h",
+            "line1": line1,
+            "line2": line2,
+            "brightness": 64,
+        },
+    }
 
 
 def get_actuator_config(name):
@@ -887,6 +1287,7 @@ sound_engine = SoundEngine()
 def compute_forecast_payload():
     latest = get_latest_map()
     fx_config = load_fx_config()
+    local_interpretation = compute_local_24h_interpretation()
     pressure = get_metric(latest, "pressure_hpa", "sensor_community_1")
     humidity = get_metric(latest, "rh_pct", "sensor_community_1")
     temperature = get_metric(latest, "temp_c", "sensor_community_1")
@@ -988,6 +1389,19 @@ def compute_forecast_payload():
     headline = label
     line1 = summary
     line2 = air_label
+    if local_interpretation.get("ok"):
+        state = local_interpretation.get("state", {})
+        message = local_interpretation.get("message", {})
+        display = local_interpretation.get("display", {})
+        state_id = state.get("id") or "interpretacion_local"
+        label = str(state_id).replace("_", " ").title()
+        summary = message.get("phrase") or display.get("line1") or summary
+        detail = state.get("detail") or message.get("notes") or detail
+        confidence = state.get("confidence") or confidence
+        signals = [item.get("condition") for item in local_interpretation.get("ranked_conditions", []) if item.get("condition")]
+        headline = summary
+        line1 = ""
+        line2 = ""
     if len(line1) > 64:
         line1 = line1[:61] + "..."
     if len(line2) > 64:
@@ -998,9 +1412,9 @@ def compute_forecast_payload():
     ], default=0)
 
     display_block = {
-        "headline": headline,
-        "line1": line1,
-        "line2": line2,
+        "headline": text_for_sign(headline),
+        "line1": text_for_sign(line1),
+        "line2": text_for_sign(line2),
         "brightness": 64,
         "effect": fx_config.get("effect_mode", "none"),
     }
@@ -1027,6 +1441,7 @@ def compute_forecast_payload():
             "label": air_label,
             "color": air_color,
         },
+        "interpretation": local_interpretation,
         "display": display_block,
         "metrics": {
             "temp_c": float(temperature["value"]) if temperature else None,
@@ -1138,6 +1553,11 @@ def api_history(
 @app.get("/api/sign/latest")
 def api_sign_latest():
     return compute_forecast_payload()
+
+
+@app.get("/api/interpretation/local-24h")
+def api_interpretation_local_24h():
+    return compute_local_24h_interpretation()
 
 
 @app.get("/api/fx/state")
@@ -2570,7 +2990,7 @@ def index():
 
 let lastForecastFetch = 0;
 let lastForecastData = null;
-const FORECAST_REFRESH_MS = 120000;
+const FORECAST_REFRESH_MS = 5000;
 
 function latestMetricById(data, metricId, preferredDevice) {{
   const items = Object.values(data).filter(v => v.metric_id === metricId);
@@ -2662,6 +3082,41 @@ async function fetchHistoryMetric(metric, device) {{
 }}
 
 async function buildForecast(data) {{
+  try {{
+    const res = await fetch('/api/interpretation/local-24h');
+    const payload = await res.json();
+    if (res.ok && payload && payload.ok) {{
+      const state = payload.state || {{}};
+      const message = payload.message || {{}};
+      const metrics = payload.metrics || {{}};
+      const ranked = payload.ranked_conditions || [];
+      const label = state.id ? state.id.replace(/_/g, ' ') : 'Interpretación local';
+      return {{
+        label,
+        summary: message.phrase || state.summary || 'Sin mensaje disponible.',
+        detail: state.detail || message.notes || '',
+        confidence: state.confidence || 'baja',
+        signals: ranked.slice(0, 5).map(item => `${{item.condition}} (${{item.score}}): ${{(item.evidence || []).join(' / ')}}`),
+        variables: [
+          {{ name: 'Estado lógico elegido', value: state.id || 'sin dato', description: state.summary || '' }},
+          {{ name: 'Frase emitible', value: message.phrase || 'sin dato', description: `${{message.category || ''}} ${{message.type || ''}}`.trim() }},
+          {{ name: 'Presión / tendencia', value: metrics.pressure_hpa != null ? `${{formatMaybe(metrics.pressure_hpa, 1)}} hPa / ${{formatMaybe(metrics.pressure_trend_6h, 1)}} hPa en 6h` : 'sin dato', description: 'Ayuda a valorar estabilidad o cambio de tiempo.' }},
+          {{ name: 'Humedad / tendencia', value: metrics.rh_pct != null ? `${{formatMaybe(metrics.rh_pct, 1)}} % / ${{formatMaybe(metrics.humidity_trend_6h, 1)}} puntos en 6h` : 'sin dato', description: 'Define ambiente seco, cargado, niebla probable o continuidad de lluvia.' }},
+          {{ name: 'Lluvia', value: metrics.rain_rate_mmh != null ? `${{formatMaybe(metrics.rain_rate_mmh, 2)}} mm/h; delta 6h ${{formatMaybe(metrics.rain_delta_6h, 2)}} mm` : 'sin dato', description: 'Señal directa para lluvia activa o reciente.' }},
+          {{ name: 'Viento', value: metrics.wind_speed_ms != null ? `${{formatMaybe(metrics.wind_speed_ms, 1)}} m/s` : 'sin dato', description: 'Refuerza estados de cambio, incomodidad o lluvia con viento.' }},
+          {{ name: 'Luz / UV', value: [metrics.light_lux != null ? `${{formatMaybe(metrics.light_lux, 0)}} lux` : null, metrics.uv_raw != null ? `UV raw ${{formatMaybe(metrics.uv_raw, 0)}}` : null, metrics.uv_voltage_v != null ? `${{formatMaybe(metrics.uv_voltage_v, 2)}} V` : null].filter(Boolean).join(', ') || 'sin dato', description: 'Luminosidad calibrada: tapado ~1 lux, interior ~168 lux, móvil cerca ~1014 lux. El UV queda en observación porque raw/voltaje apenas varían.' }},
+          {{ name: 'Aire', value: [metrics.pm10_ugm3 != null ? `PM10 ${{formatMaybe(metrics.pm10_ugm3, 1)}}` : null, metrics.pm2_5_ugm3 != null ? `PM2.5 ${{formatMaybe(metrics.pm2_5_ugm3, 1)}}` : null].filter(Boolean).join(', ') || 'sin dato', description: 'Contexto ambiental para aire limpio, regular o cargado.' }},
+        ],
+        algorithm: [
+          'El backend convierte sensores en estados lógicos puntuados.',
+          'Cada estado acumula evidencias: lluvia, humedad, presión, viento, luz, UV, partículas y suelo.',
+          'El estado con más puntuación busca una frase del CSV con la misma condicion_logica.',
+          'Si no hay frase exacta, usa mensajes generales para no dejar los carteles vacíos.',
+        ],
+      }};
+    }}
+  }} catch (_err) {{}}
+
   const pressure = latestMetricById(data, 'pressure_hpa', 'sensor_community_1');
   const humidity = latestMetricById(data, 'rh_pct', 'sensor_community_1');
   const temperature = latestMetricById(data, 'temp_c', 'sensor_community_1');
@@ -2764,6 +3219,7 @@ async function renderForecast(data) {{
     lastForecastFetch = now;
   }}
   const forecast = lastForecastData;
+  const repeatedSummary = String(forecast.label || '').trim() === String(forecast.summary || '').trim();
   const dash = document.getElementById('dashForecast');
   if (dash) {{
     dash.innerHTML = `
@@ -2774,7 +3230,7 @@ async function renderForecast(data) {{
           <div><strong>${{forecast.label}}</strong></div>
         </div>
       </div>
-      <div class="forecast-summary">${{forecast.summary}}</div>
+      ${{repeatedSummary ? '' : `<div class="forecast-summary">${{forecast.summary}}</div>`}}
       <div class="forecast-signals"><small>${{(forecast.signals || []).slice(0, 3).join(' ')}}</small></div>
     `;
   }}
@@ -2786,7 +3242,7 @@ async function renderForecast(data) {{
   const algorithm = document.getElementById('forecastAlgorithm');
   const signals = document.getElementById('forecastSignals');
   if (title) title.innerHTML = `<strong>${{forecast.label}}</strong>`;
-  if (summary) summary.textContent = forecast.summary;
+  if (summary) summary.textContent = repeatedSummary ? '' : forecast.summary;
   if (detail) detail.textContent = forecast.detail;
   if (confidence) confidence.textContent = `Confianza orientativa: ${{forecast.confidence}}. Esta tarjeta resume una tendencia local, no un pronóstico oficial.`;
   if (variables) variables.innerHTML = forecast.variables.map(v => `<div style="margin-bottom:10px;"><strong>${{v.name}}</strong>: ${{v.value}}<br><span style="opacity:0.85;">${{v.description}}</span></div>`).join('');

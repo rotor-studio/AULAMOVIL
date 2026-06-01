@@ -1,9 +1,9 @@
 #include <ESP8266WebServer.h>
 #include <ESP8266WiFi.h>
 
-static const char* WIFI_SSID = "CHANGE_WIFI_SSID";
-static const char* WIFI_PASSWORD = "CHANGE_WIFI_PASSWORD";
-static const char* API_TOKEN = "CHANGE_API_TOKEN";
+static const char* WIFI_SSID = "NUBEMOVIL";
+static const char* WIFI_PASSWORD = "100*Nubemovil001";
+static const char* API_TOKEN = "666999";
 static const char* HOSTNAME = "nubemovil-vapor";
 
 static const uint8_t VAPOR_RELAY_PIN = D6;
@@ -12,11 +12,15 @@ static const bool RELAY_ACTIVE_HIGH = true;
 static const bool DEFAULT_VAPOR_ON = false;
 static const bool DEFAULT_FAN_ON = false;
 static const unsigned long SERIAL_BAUD = 115200;
+static const unsigned long WIFI_RETRY_INTERVAL_MS = 10000;
+static const unsigned long WIFI_CONNECT_TIMEOUT_MS = 20000;
 
 ESP8266WebServer server(80);
 bool vaporRelayOn = DEFAULT_VAPOR_ON;
 bool fanRelayOn = DEFAULT_FAN_ON;
 unsigned long lastStatusPrintMs = 0;
+unsigned long lastWiFiAttemptMs = 0;
+bool wifiAttemptInProgress = false;
 
 bool authorized() {
   String token = server.arg("token");
@@ -143,23 +147,36 @@ void handleRoot() {
   server.send(200, "text/html; charset=utf-8", html);
 }
 
-void ensureWiFi() {
-  if (WiFi.status() == WL_CONNECTED) {
-    return;
-  }
-
+void startWiFiAttempt() {
   WiFi.mode(WIFI_STA);
   WiFi.hostname(HOSTNAME);
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+  lastWiFiAttemptMs = millis();
+  wifiAttemptInProgress = true;
+  Serial.println("[wifi] CONNECTING");
+}
 
-  unsigned long started = millis();
-  while (WiFi.status() != WL_CONNECTED && millis() - started < 20000) {
-    delay(250);
+void ensureWiFi() {
+  const wl_status_t status = WiFi.status();
+  const unsigned long now = millis();
+
+  if (status == WL_CONNECTED) {
+    if (wifiAttemptInProgress) {
+      wifiAttemptInProgress = false;
+      Serial.printf("[wifi] OK ip=%s\n", WiFi.localIP().toString().c_str());
+    }
+    return;
   }
 
-  if (WiFi.status() == WL_CONNECTED) {
-    Serial.printf("[wifi] OK ip=%s\n", WiFi.localIP().toString().c_str());
-  } else {
+  if (!wifiAttemptInProgress) {
+    if (lastWiFiAttemptMs == 0 || now - lastWiFiAttemptMs >= WIFI_RETRY_INTERVAL_MS) {
+      startWiFiAttempt();
+    }
+    return;
+  }
+
+  if (now - lastWiFiAttemptMs >= WIFI_CONNECT_TIMEOUT_MS) {
+    wifiAttemptInProgress = false;
     Serial.println("[wifi] FAIL");
   }
 }
@@ -174,6 +191,7 @@ void setup() {
   pinMode(FAN_RELAY_PIN, OUTPUT);
   applyVaporState(DEFAULT_VAPOR_ON);
   applyFanState(DEFAULT_FAN_ON);
+  WiFi.persistent(false);
   ensureWiFi();
 
   server.on("/", HTTP_GET, handleRoot);
@@ -186,8 +204,8 @@ void setup() {
 }
 
 void loop() {
-  ensureWiFi();
   server.handleClient();
+  ensureWiFi();
 
   const unsigned long now = millis();
   if (now - lastStatusPrintMs >= 3000) {

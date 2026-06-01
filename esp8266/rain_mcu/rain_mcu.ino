@@ -1,11 +1,27 @@
 #include <ESP8266WiFi.h>
 #include <PubSubClient.h>
 
-// Replace these placeholders before flashing a device.
-  const char* WIFI_SSID = "CHANGE_WIFI_SSID";
-  const char* WIFI_PASSWORD = "CHANGE_WIFI_PASSWORD";
-  const char* MQTT_HOST = "192.168.1.109";
-  const int MQTT_PORT = 1883;
+#if defined(__has_include)
+#if __has_include("local_config.h")
+#include "local_config.h"
+#endif
+#endif
+
+#ifndef WIFI_SSID
+#define WIFI_SSID "NUBEMOVIL"
+#endif
+#ifndef WIFI_PASSWORD
+#define WIFI_PASSWORD "100*Nubemovil001"
+#endif
+#ifndef MQTT_HOST
+#define MQTT_HOST "192.168.1.109"
+#endif
+#ifndef MQTT_PORT
+#define MQTT_PORT 1883
+#endif
+#ifndef HOSTNAME
+#define HOSTNAME "nubemovil-rain"
+#endif
 
 // Keep the published topics stable so the collector continues to ingest data.
 static const char* TOPIC_TIPS_TOTAL = "meteo/rain/tips_total";
@@ -21,9 +37,8 @@ static const uint32_t DEBOUNCE_MS = 150;
 static const float MM_PER_TIP = 0.64f;
 
 static const unsigned long SERIAL_BAUD = 115200;
-static const unsigned long WIFI_STARTUP_DELAY_MS = 45000;
-static const unsigned long WIFI_TIMEOUT_MS = 15000;
-static const unsigned long WIFI_RETRY_MS = 10000;
+static const unsigned long WIFI_RETRY_INTERVAL_MS = 10000;
+static const unsigned long WIFI_CONNECT_TIMEOUT_MS = 20000;
 static const unsigned long MQTT_RETRY_MS = 5000;
 static const unsigned long PUBLISH_MS = 2000;
 
@@ -34,7 +49,7 @@ uint32_t lastPublishedTips = 0;
 unsigned long lastPublishMs = 0;
 unsigned long lastWifiAttemptMs = 0;
 unsigned long lastMqttAttemptMs = 0;
-unsigned long wifiStartupDeadlineMs = WIFI_STARTUP_DELAY_MS;
+bool wifiAttemptInProgress = false;
 
 WiFiClient espClient;
 PubSubClient client(espClient);
@@ -47,48 +62,41 @@ ICACHE_RAM_ATTR void onTip() {
   }
 }
 
-bool connectWiFi() {
-  Serial.print("[wifi] connecting to ");
-  Serial.println(WIFI_SSID);
-
+void startWiFiAttempt() {
   WiFi.mode(WIFI_STA);
   WiFi.setSleepMode(WIFI_NONE_SLEEP);
+  WiFi.hostname(HOSTNAME);
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-
-  const unsigned long started = millis();
-  while (WiFi.status() != WL_CONNECTED && millis() - started < WIFI_TIMEOUT_MS) {
-    delay(250);
-    Serial.print(".");
-    yield();
-  }
-  Serial.println();
-
-  if (WiFi.status() != WL_CONNECTED) {
-    Serial.print("[wifi] failed status=");
-    Serial.println(WiFi.status());
-    return false;
-  }
-
-  Serial.print("[wifi] connected ip=");
-  Serial.println(WiFi.localIP());
-  return true;
+  lastWifiAttemptMs = millis();
+  wifiAttemptInProgress = true;
+  Serial.printf("[wifi] CONNECTING ssid=%s\n", WIFI_SSID);
 }
 
 bool ensureWiFi() {
-  if (WiFi.status() == WL_CONNECTED) {
+  const wl_status_t status = WiFi.status();
+  const unsigned long now = millis();
+
+  if (status == WL_CONNECTED) {
+    if (wifiAttemptInProgress) {
+      wifiAttemptInProgress = false;
+      Serial.printf("[wifi] OK ip=%s\n", WiFi.localIP().toString().c_str());
+    }
     return true;
   }
 
-  const unsigned long now = millis();
-  if (wifiStartupDeadlineMs != 0 && now < wifiStartupDeadlineMs) {
+  if (!wifiAttemptInProgress) {
+    if (lastWifiAttemptMs == 0 || now - lastWifiAttemptMs >= WIFI_RETRY_INTERVAL_MS) {
+      startWiFiAttempt();
+    }
     return false;
   }
 
-  if (now - lastWifiAttemptMs < WIFI_RETRY_MS) {
-    return false;
+  if (now - lastWifiAttemptMs >= WIFI_CONNECT_TIMEOUT_MS) {
+    wifiAttemptInProgress = false;
+    Serial.printf("[wifi] FAIL status=%d\n", status);
   }
-  lastWifiAttemptMs = now;
-  return connectWiFi();
+
+  return false;
 }
 
 bool ensureMQTT() {
@@ -134,6 +142,8 @@ void setup() {
   attachInterrupt(digitalPinToInterrupt(HALL_PIN), onTip, FALLING);
 
   client.setServer(MQTT_HOST, MQTT_PORT);
+  WiFi.persistent(false);
+  ensureMQTT();
 
   Serial.println("[rain] tipping bucket ready");
   Serial.print("[rain] mm_per_tip=");
