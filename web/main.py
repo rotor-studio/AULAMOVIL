@@ -1044,6 +1044,69 @@ def api_latest():
     return get_latest_map()
 
 
+def _run_text_command(command):
+    try:
+        result = subprocess.run(
+            command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=2,
+            check=False,
+        )
+        if result.returncode != 0:
+            return None
+        return (result.stdout or "").strip()
+    except Exception:
+        return None
+
+
+def get_pi_power_health():
+    throttled_raw = _run_text_command(["vcgencmd", "get_throttled"])
+    temperature_raw = _run_text_command(["vcgencmd", "measure_temp"])
+    core_voltage_raw = _run_text_command(["vcgencmd", "measure_volts", "core"])
+
+    throttled_value = 0
+    if throttled_raw and "=" in throttled_raw:
+        try:
+            throttled_value = int(throttled_raw.split("=", 1)[1], 16)
+        except Exception:
+            throttled_value = 0
+
+    temperature_c = None
+    if temperature_raw and "=" in temperature_raw:
+        try:
+            temperature_c = float(temperature_raw.split("=", 1)[1].replace("'C", ""))
+        except Exception:
+            temperature_c = None
+
+    core_voltage_v = None
+    if core_voltage_raw and "=" in core_voltage_raw:
+        try:
+            core_voltage_v = float(core_voltage_raw.split("=", 1)[1].replace("V", ""))
+        except Exception:
+            core_voltage_v = None
+
+    return {
+        "ok": throttled_raw is not None,
+        "ts": time.time(),
+        "throttled_raw": throttled_raw,
+        "current_undervoltage": bool(throttled_value & 0x1),
+        "current_freq_capped": bool(throttled_value & 0x2),
+        "current_throttled": bool(throttled_value & 0x4),
+        "historical_undervoltage": bool(throttled_value & 0x10000),
+        "historical_freq_capped": bool(throttled_value & 0x20000),
+        "historical_throttled": bool(throttled_value & 0x40000),
+        "temperature_c": temperature_c,
+        "core_voltage_v": core_voltage_v,
+    }
+
+
+@app.get("/api/pi/health")
+def api_pi_health():
+    return get_pi_power_health()
+
+
 @app.get("/api/history")
 def api_history(
     metric: str = Query(..., description="metric_id"),
@@ -1586,6 +1649,7 @@ def index():
       <div id=\"dashRain\" class=\"card\"></div>
       <div id=\"dashBme\" class=\"card\"></div>
       <div id=\"dashLight\" class=\"card\"></div>
+      <div id=\"dashPower\" class=\"card\"></div>
       <div id=\"dashAir\" class=\"card\"></div>
       <div id=\"dashGps\" class=\"card\"></div>
       <div id=\"dashCam\" class=\"card\"></div>
@@ -1741,75 +1805,7 @@ def index():
       <div class=\"timelapse-actions\">
         <button onclick=\"toggleSoundGlobal(true)\">Play General</button>
         <button onclick=\"toggleSoundGlobal(false)\">Stop General</button>
-        <button onclick=\"stopAllSound()\">Cortar Sonido</button>
-        <button onclick=\"playChirpTest()\">Probar Chirp</button>
-      </div>
-      <div class=\"timelapse-actions\" style=\"margin-top:8px;\">
-        <button onclick=\"setSoundOutput('usb')\">Salida USB</button>
-        <span id=\"soundOutputUsbStatus\" class=\"dot offline\"></span>
-        <button onclick=\"setSoundOutput('jack')\">Salida Jack</button>
-        <span id=\"soundOutputJackStatus\" class=\"dot offline\"></span>
-      </div>
-      <div id=\"soundEngineStatus\" style=\"margin-top:8px; opacity:0.85;\">Estado: --</div>
-    </div>
-
-    <div class=\"card\">
-      <h3>Subir sonido</h3>
-      <div class=\"timelapse-actions\">
-        <input id=\"soundUploadFile\" type=\"file\" accept=\".wav,.mp3,.ogg\" />
-        <button onclick=\"uploadSoundFile()\">Subir archivo</button>
-      </div>
-      <div id=\"soundUploadStatus\" style=\"margin-top:8px; opacity:0.85;\"></div>
-    </div>
-
-    <div class=\"card\">
-      <h3>Nueva regla</h3>
-      <div class=\"timelapse-controls\">
-        <label>Nombre: <input id=\"soundRuleName\" type=\"text\" value=\"Regla sonido\" /></label>
-        <label>Sensor:
-          <select id=\"soundMetricSelect\"></select>
-        </label>
-        <label>Sonido:
-          <select id=\"soundFileSelect\"></select>
-        </label>
-        <label>Modo:
-          <select id=\"soundModeSelect\">
-            <option value=\"once\">Una vez</option>
-            <option value=\"loop\">Loop</option>
-          </select>
-        </label>
-        <label>Min valor: <input id=\"soundMinValue\" type=\"number\" step=\"any\" /></label>
-        <label>Max valor: <input id=\"soundMaxValue\" type=\"number\" step=\"any\" /></label>
-        <label>Cambio mínimo: <input id=\"soundMinDelta\" type=\"number\" step=\"any\" value=\"1\" /></label>
-        <label>Cooldown (s): <input id=\"soundCooldown\" type=\"number\" step=\"1\" value=\"10\" /></label>
-        <button onclick=\"addSoundRule()\">Añadir regla</button>
-      </div>
-      <div style=\"margin-top:8px; opacity:0.85;\">Una regla se dispara cuando el sensor entra en rango y cambia al menos el valor indicado.</div>
-    </div>
-
-    <div class=\"card\">
-      <h3>Sonidos disponibles</h3>
-      <div id=\"soundFilesList\"></div>
-    </div>
-
-    <div class=\"card\">
-      <h3>Reglas activas</h3>
-      <div id=\"soundRulesList\"></div>
-    </div>
-
-    <div class=\"card\">
-      <h3>API de sonido</h3>
-      <div style=\"opacity:0.9;\">
-        <p>Esta pestaña usa una API simple para controlar sonidos, subir audios y asociarlos a sensores.</p>
-        <p><strong>GET</strong> <span class=\"mono\">/api/sound/state</span>: devuelve reglas, sonidos, motor y métricas disponibles.</p>
-        <p><strong>POST</strong> <span class=\"mono\">/api/sound/global</span>: activa o para el motor global de sonido.</p>
-        <p><strong>POST</strong> <span class=\"mono\">/api/sound/stop</span>: corta la reproducción actual.</p>
-        <p><strong>POST</strong> <span class=\"mono\">/api/sound/test/chirp</span>: lanza el chirp de prueba.</p>
-        <p><strong>POST</strong> <span class=\"mono\">/api/sound/test/file</span>: reproduce un archivo subido, en una vez o en loop.</p>
-        <p><strong>POST</strong> <span class=\"mono\">/api/sound/upload</span>: sube un <span class=\"mono\">wav</span>, <span class=\"mono\">mp3</span> u <span class=\"mono\">ogg</span>.</p>
-        <p><strong>POST</strong> <span class=\"mono\">/api/sound/rules</span>: guarda la lista completa de reglas.</p>
-        <p><strong>DELETE</strong> <span class=\"mono\">/api/sound/rules/&lt;id&gt;</span>: elimina una regla.</p>
-        <p>Las reglas usan: sensor, sonido, rango mínimo/máximo, cambio mínimo, cooldown y modo <span class=\"mono\">once</span> o <span class=\"mono\">loop</span>.</p>
+        <button onclics=\"mono\">loop</span>.</p>
       </div>
     </div>
   </div>
