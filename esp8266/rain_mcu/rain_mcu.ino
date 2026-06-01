@@ -21,6 +21,7 @@ static const uint32_t DEBOUNCE_MS = 150;
 static const float MM_PER_TIP = 0.64f;
 
 static const unsigned long SERIAL_BAUD = 115200;
+static const unsigned long WIFI_STARTUP_DELAY_MS = 45000;
 static const unsigned long WIFI_TIMEOUT_MS = 15000;
 static const unsigned long WIFI_RETRY_MS = 10000;
 static const unsigned long MQTT_RETRY_MS = 5000;
@@ -33,6 +34,7 @@ uint32_t lastPublishedTips = 0;
 unsigned long lastPublishMs = 0;
 unsigned long lastWifiAttemptMs = 0;
 unsigned long lastMqttAttemptMs = 0;
+unsigned long wifiStartupDeadlineMs = WIFI_STARTUP_DELAY_MS;
 
 WiFiClient espClient;
 PubSubClient client(espClient);
@@ -78,6 +80,10 @@ bool ensureWiFi() {
   }
 
   const unsigned long now = millis();
+  if (wifiStartupDeadlineMs != 0 && now < wifiStartupDeadlineMs) {
+    return false;
+  }
+
   if (now - lastWifiAttemptMs < WIFI_RETRY_MS) {
     return false;
   }
@@ -128,8 +134,6 @@ void setup() {
   attachInterrupt(digitalPinToInterrupt(HALL_PIN), onTip, FALLING);
 
   client.setServer(MQTT_HOST, MQTT_PORT);
-  connectWiFi();
-  ensureMQTT();
 
   Serial.println("[rain] tipping bucket ready");
   Serial.print("[rain] mm_per_tip=");
