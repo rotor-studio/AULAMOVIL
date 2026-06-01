@@ -442,17 +442,54 @@ def confidence_from_score(score, observed_count):
     return "media"
 
 
-def choose_message(rows, condition, seed_text):
-    candidates = [row for row in rows if row["condition"] == condition]
-    if not candidates:
-        candidates = [row for row in rows if row["condition"] in ("mensaje_general", "uso_general_refranero")]
-    if not candidates:
+NON_VARIANT_CATEGORIES = {
+    "Interfaz / meta",
+    "Refranero / contexto",
+}
+
+
+def choose_candidate(rows, seed_text):
+    if not rows:
         return None
-    candidates.sort(key=lambda row: (-row["priority"], row["phrase"]))
+    candidates = sorted(rows, key=lambda row: (-row["priority"], row["phrase"]))
     top_priority = candidates[0]["priority"]
     best = [row for row in candidates if row["priority"] == top_priority]
     digest = hashlib.sha1(seed_text.encode("utf-8")).hexdigest()
     return best[int(digest[:8], 16) % len(best)]
+
+
+def choose_message(rows, condition, seed_text):
+    candidates = [row for row in rows if row["condition"] == condition]
+    if candidates and len(candidates) == 1:
+        category = (candidates[0].get("category") or "").strip()
+        if category and category not in NON_VARIANT_CATEGORIES:
+            category_candidates = [
+                row
+                for row in rows
+                if (row.get("category") or "").strip() == category and row["condition"] != condition
+            ]
+            if category_candidates:
+                chosen = choose_candidate(category_candidates, f"{seed_text}:category:{category}")
+                if chosen is not None:
+                    return chosen
+    if candidates:
+        return choose_candidate(candidates, seed_text)
+
+    candidates = [row for row in rows if row["condition"] in ("mensaje_general", "uso_general_refranero")]
+    if not candidates:
+        return None
+    return choose_candidate(candidates, seed_text)
+
+
+def build_message_seed(state_id, state_score, confidence, ranked, source_ts):
+    top_conditions = "|".join(
+        f"{condition}:{round(score, 1)}"
+        for condition, score in ranked[:3]
+    )
+    base = f"{state_id}:{round(state_score, 2)}:{confidence}:{top_conditions}"
+    if confidence == "alta":
+        return f"{base}:{int(source_ts // 180)}"
+    return base
 
 
 def compute_local_24h_interpretation():
@@ -674,7 +711,8 @@ def compute_local_24h_interpretation():
     state_id, state_score = ranked[0]
     observed_items = [pressure_val, humidity_val, temp_val, wind_val, rain_rate_val, rain_total_val, light_val, uv_raw_val, uv_voltage_val, pm10_val, pm25_val, ground_temp_val, ground_humidity_val]
     observed_count = sum(1 for value in observed_items if value is not None)
-    seed = f"{state_id}:{int(time.time() // 1800)}"
+    confidence = confidence_from_score(state_score, observed_count)
+    seed = build_message_seed(state_id, state_score, confidence, ranked, time.time())
     message = choose_message(messages, state_id, seed)
 
     fallback_text = "La estación lee el tiempo de cerca: hacen falta más señales para afinar el mensaje."
@@ -705,7 +743,7 @@ def compute_local_24h_interpretation():
         "state": {
             "id": state_id,
             "score": round(state_score, 2),
-            "confidence": confidence_from_score(state_score, observed_count),
+            "confidence": confidence,
             "summary": summary,
             "detail": detail,
             "evidence": reasons,
