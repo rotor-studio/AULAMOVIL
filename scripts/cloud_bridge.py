@@ -11,6 +11,7 @@ import yaml
 
 LATEST_URL = "http://127.0.0.1:8000/api/latest"
 SIGN_URL = "http://127.0.0.1:8000/api/sign/latest"
+PI_HEALTH_URL = "http://127.0.0.1:8000/api/pi/health"
 DEFAULT_FRAME_PATH = "/opt/rotor-meteo/data/hls/latest.jpg"
 DEFAULT_INTERVAL_SEC = 12
 DEFAULT_TIMEOUT_SEC = 8
@@ -28,7 +29,7 @@ DEFAULT_METRICS = [
     {"source": "bme280_ground/rh_ground_pct", "label": "Hum suelo", "decimals": 0, "unit": "%"},
     {"source": "sensor_community_1/pm2_5_ugm3", "label": "PM2.5", "decimals": 1, "unit": "ug/m3"},
     {"source": "sensor_community_1/pm10_ugm3", "label": "PM10", "decimals": 1, "unit": "ug/m3"},
-    {"label": "Voltaje", "static_value": 12.4, "decimals": 1, "unit": "V"},
+    {"source": "pi_health/temperature_c", "label": "TEMP PI", "decimals": 1, "unit": "C"},
 ]
 
 
@@ -68,6 +69,10 @@ def fetch_sign_state(timeout_sec):
     return fetch_json(SIGN_URL, timeout_sec)
 
 
+def fetch_pi_health(timeout_sec):
+    return fetch_json(PI_HEALTH_URL, timeout_sec)
+
+
 def coerce_number(value):
     if value is None or value == "":
         return None
@@ -86,7 +91,7 @@ def format_metric_value(raw_value, decimals):
     return f"{numeric:.{decimals}f}"
 
 
-def build_metrics(latest_map, specs):
+def build_metrics(latest_map, pi_health, specs):
     metrics = []
     for spec in specs:
         source = str(spec.get("source", "")).strip()
@@ -102,6 +107,21 @@ def build_metrics(latest_map, specs):
             )
             continue
         if not source:
+            continue
+        if source.startswith("pi_health/"):
+            key = source.split("/", 1)[1]
+            raw_value = pi_health.get(key) if isinstance(pi_health, dict) else None
+            if raw_value is None:
+                continue
+            metrics.append(
+                {
+                    "label": str(spec.get("label") or source),
+                    "value": format_metric_value(raw_value, int(spec.get("decimals", 1))),
+                    "unit": str(spec.get("unit") or ""),
+                    "device": "aulamovil",
+                    "metric_id": str(spec.get("metric_id") or key),
+                }
+            )
             continue
         row = latest_map.get(source)
         if not isinstance(row, dict):
@@ -169,7 +189,7 @@ def build_web_display(sign_state):
     return build_display(sign_state)
 
 
-def build_payload(config, latest_map, sign_state, last_frame_mtime):
+def build_payload(config, latest_map, pi_health, sign_state, last_frame_mtime):
     bridge = config.get("cloud_bridge", {})
     specs = bridge.get("metrics") or DEFAULT_METRICS
     frame_path = str(bridge.get("frame_path") or DEFAULT_FRAME_PATH)
@@ -188,7 +208,7 @@ def build_payload(config, latest_map, sign_state, last_frame_mtime):
         "title": str(bridge.get("title") or DEFAULT_TITLE),
         "subtitle": str(bridge.get("subtitle") or DEFAULT_SUBTITLE),
         "location": build_location(latest_map),
-        "metrics": build_metrics(latest_map, specs),
+        "metrics": build_metrics(latest_map, pi_health, specs),
         "display": build_display(sign_state),
         "web_display": build_web_display(sign_state),
         "frame_base64": frame_base64,
@@ -238,7 +258,11 @@ def main():
         try:
             latest_map = fetch_latest_map(timeout_sec)
             sign_state = fetch_sign_state(timeout_sec)
-            payload, last_frame_mtime = build_payload(config, latest_map, sign_state, last_frame_mtime)
+            try:
+                pi_health = fetch_pi_health(timeout_sec)
+            except Exception:
+                pi_health = {}
+            payload, last_frame_mtime = build_payload(config, latest_map, pi_health, sign_state, last_frame_mtime)
             response_text = post_payload(endpoint, timeout_sec, payload)
             print(f"[cloud_bridge] ok metrics={len(payload['metrics'])} frame={'yes' if payload.get('frame_base64') else 'no'} response={response_text[:140]}")
         except urllib.error.HTTPError as exc:

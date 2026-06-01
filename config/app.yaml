@@ -80,10 +80,10 @@ cloud_bridge:
       label: PM10
       decimals: 1
       unit: ug/m3
-    - label: Voltaje
-      static_value: 12.4
+    - source: pi_health/temperature_c
+      label: TEMP PI
       decimals: 1
-      unit: V
+      unit: C
 vapor:
   enabled: false
   base_url: ""
