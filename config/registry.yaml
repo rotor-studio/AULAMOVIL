@@ -9,7 +9,7 @@ devices:
   bme280_ground:
     name: BME280 Suelo Sombra
     location: ground shade
-    metrics: [temp_ground_c, rh_ground_pct]
+    metrics: [temp_ground_c, rh_ground_pct, pressure_ground_hpa]
   rain_gauge_1:
     name: Rain Gauge 1
     location: roof
@@ -72,6 +72,9 @@ metrics:
   rh_ground_pct:
     name: Humedad suelo (sombra)
     unit: pct
+  pressure_ground_hpa:
+    name: Presión suelo (sombra)
+    unit: hPa
   rain_mm:
     name: Rainfall
     unit: mm

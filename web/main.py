@@ -1,4 +1,4 @@
-import asyncio
+﻿import asyncio
 import csv
 import hashlib
 import json
@@ -9,6 +9,7 @@ import subprocess
 import tempfile
 import threading
 import time
+import re
 import unicodedata
 import urllib.error
 import urllib.parse
@@ -134,12 +135,14 @@ SOUND_DIR = "/opt/rotor-meteo/data/sounds"
 SOUND_CONFIG_PATH = "/opt/rotor-meteo/data/sound_config.json"
 FX_CONFIG_PATH = "/opt/rotor-meteo/data/fx_config.json"
 WIND_CALIBRATION_PATH = "/opt/rotor-meteo/data/wind_calibration.json"
+RAIN_WINDOW_CONFIG_PATH = "/opt/rotor-meteo/data/rain_window_config.json"
 INTERPRETATION_MESSAGES_PATH = CONFIG.get("interpretation", {}).get(
     "messages_csv",
     "/opt/rotor-meteo/data/messages/refranes_meteorologicos_asturias.csv",
 )
 DEFAULT_USB_AUDIO_DEVICE = "plughw:CARD=CD002,DEV=0"
 DEFAULT_JACK_AUDIO_DEVICE = "plughw:CARD=Headphones,DEV=0"
+RAIN_WINDOW_SEC = 12 * 3600
 
 def can_open_audio_device(device):
     if not device:
@@ -403,6 +406,148 @@ def get_history(metric_id, device_id=None, seconds=21600):
         ).fetchall()
     conn.close()
     return [dict(r) for r in rows]
+
+
+def default_rain_window_config():
+    return {
+        "anchor_ts": None,
+        "updated_at": None,
+    }
+
+
+def load_rain_window_config():
+    if not os.path.exists(RAIN_WINDOW_CONFIG_PATH):
+        return default_rain_window_config()
+    try:
+        with open(RAIN_WINDOW_CONFIG_PATH, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if not isinstance(data, dict):
+            return default_rain_window_config()
+        config = default_rain_window_config()
+        config.update(data)
+        anchor_ts = config.get("anchor_ts")
+        config["anchor_ts"] = float(anchor_ts) if anchor_ts is not None else None
+        return config
+    except Exception:
+        return default_rain_window_config()
+
+
+def save_rain_window_config(config):
+    os.makedirs(os.path.dirname(RAIN_WINDOW_CONFIG_PATH), exist_ok=True)
+    payload = default_rain_window_config()
+    payload.update(config or {})
+    with open(RAIN_WINDOW_CONFIG_PATH, "w", encoding="utf-8") as f:
+        json.dump(payload, f, ensure_ascii=False, indent=2)
+    return payload
+
+
+def default_rain_window_start(now_ts=None):
+    now_dt = datetime.fromtimestamp(now_ts or time.time(), tz=timezone.utc).astimezone()
+    if now_dt.hour < 12:
+        start_dt = now_dt.replace(hour=0, minute=0, second=0, microsecond=0)
+    else:
+        start_dt = now_dt.replace(hour=12, minute=0, second=0, microsecond=0)
+    return start_dt.timestamp()
+
+
+def current_rain_window_bounds(now_ts=None, config=None):
+    now_ts = float(now_ts or time.time())
+    config = config or load_rain_window_config()
+    anchor_ts = config.get("anchor_ts")
+    if anchor_ts is not None and anchor_ts <= now_ts:
+        elapsed = max(0.0, now_ts - float(anchor_ts))
+        window_index = int(elapsed // RAIN_WINDOW_SEC)
+        start_ts = float(anchor_ts) + (window_index * RAIN_WINDOW_SEC)
+        source = "manual"
+    else:
+        start_ts = default_rain_window_start(now_ts)
+        source = "default"
+    end_ts = start_ts + RAIN_WINDOW_SEC
+    return {
+        "start_ts": start_ts,
+        "end_ts": end_ts,
+        "source": source,
+        "anchor_ts": anchor_ts,
+    }
+
+
+def get_last_reading(metric_id, device_id=None, at_or_before=None, at_or_after=None):
+    conn = get_conn()
+    clauses = ["metric_id=?"]
+    params = [metric_id]
+    if device_id:
+        clauses.append("device_id=?")
+        params.append(device_id)
+    if at_or_before is not None:
+        clauses.append("ts<=?")
+        params.append(float(at_or_before))
+        order = "ORDER BY ts DESC"
+    elif at_or_after is not None:
+        clauses.append("ts>=?")
+        params.append(float(at_or_after))
+        order = "ORDER BY ts ASC"
+    else:
+        order = "ORDER BY ts DESC"
+    query = (
+        "SELECT ts, value, unit, device_id, metric_id FROM readings "
+        f"WHERE {' AND '.join(clauses)} {order} LIMIT 1"
+    )
+    row = conn.execute(query, tuple(params)).fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+def compute_rain_window_state(now_ts=None):
+    now_ts = float(now_ts or time.time())
+    window = current_rain_window_bounds(now_ts)
+    latest = get_latest_map()
+    total_now = get_metric(latest, "rain_mm_total", "rain_node_mcu") or get_metric(latest, "rain_mm", "rain_node_mcu")
+    tips_now = get_metric(latest, "rain_tips_total", "rain_node_mcu")
+    baseline_total = get_last_reading("rain_mm_total", "rain_node_mcu", at_or_before=window["start_ts"])
+    if not baseline_total:
+        baseline_total = get_last_reading("rain_mm_total", "rain_node_mcu", at_or_after=window["start_ts"])
+    baseline_tips = get_last_reading("rain_tips_total", "rain_node_mcu", at_or_before=window["start_ts"])
+    if not baseline_tips:
+        baseline_tips = get_last_reading("rain_tips_total", "rain_node_mcu", at_or_after=window["start_ts"])
+
+    total_now_val = metric_float(total_now)
+    tips_now_val = metric_float(tips_now)
+    baseline_total_val = metric_float(baseline_total)
+    baseline_tips_val = metric_float(baseline_tips)
+
+    window_total = None
+    if total_now_val is not None:
+        if baseline_total_val is None:
+            window_total = max(0.0, total_now_val)
+        elif total_now_val >= baseline_total_val:
+            window_total = total_now_val - baseline_total_val
+        else:
+            window_total = max(0.0, total_now_val)
+
+    window_tips = None
+    if tips_now_val is not None:
+        if baseline_tips_val is None:
+            window_tips = max(0.0, tips_now_val)
+        elif tips_now_val >= baseline_tips_val:
+            window_tips = tips_now_val - baseline_tips_val
+        else:
+            window_tips = max(0.0, tips_now_val)
+
+    return {
+        "window_start_ts": window["start_ts"],
+        "window_end_ts": window["end_ts"],
+        "next_reset_ts": window["end_ts"],
+        "window_source": window["source"],
+        "anchor_ts": window["anchor_ts"],
+        "window_total_mm": window_total,
+        "window_tips_total": window_tips,
+        "current_total_mm": total_now_val,
+        "current_tips_total": tips_now_val,
+        "baseline_total_mm": baseline_total_val,
+        "baseline_tips_total": baseline_tips_val,
+        "current_rate_mmh": metric_float(get_metric(latest, "rain_rate_mmh", "rain_node_mcu")),
+        "ts": total_now.get("ts") if total_now else (tips_now.get("ts") if tips_now else None),
+    }
 
 
 INTERPRETATION_HISTORY_BUCKET_SEC = 180
@@ -1112,6 +1257,55 @@ def save_sound_config(config):
 def configured_output_device():
     config = load_sound_config()
     return str(config.get("output_device") or "").strip()
+
+
+def current_sound_card_name(output_device=None):
+    device = str(output_device or configured_output_device() or "").strip()
+    if "Headphones" in device:
+        return "Headphones"
+    if "CD002" in device:
+        return "CD002"
+    return None
+
+
+def get_sound_volume(output_device=None):
+    card_name = current_sound_card_name(output_device)
+    if not card_name:
+        return {"card": None, "percent": None, "control": "PCM"}
+    try:
+        result = subprocess.run(
+            ["amixer", "-c", card_name, "sget", "PCM"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=2,
+            check=False,
+        )
+        if result.returncode != 0:
+            return {"card": card_name, "percent": None, "control": "PCM"}
+        match = re.search(r"\[(\d{1,3})%\]", result.stdout)
+        percent = int(match.group(1)) if match else None
+        return {"card": card_name, "percent": percent, "control": "PCM"}
+    except Exception:
+        return {"card": card_name, "percent": None, "control": "PCM"}
+
+
+def set_sound_volume(percent, output_device=None):
+    card_name = current_sound_card_name(output_device)
+    if not card_name:
+        raise ValueError("sound_output_unavailable")
+    value = max(0, min(100, int(round(float(percent)))))
+    result = subprocess.run(
+        ["amixer", "-c", card_name, "sset", "PCM", f"{value}%"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        timeout=3,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(result.stderr.strip() or "amixer_set_failed")
+    return get_sound_volume(output_device)
 
 
 FX_COLOR_PRESETS = {
@@ -2014,6 +2208,22 @@ def api_history(
     return [dict(r) for r in rows]
 
 
+@app.get("/api/rain/window")
+def api_rain_window():
+    return compute_rain_window_state()
+
+
+@app.post("/api/rain/window/reset")
+def api_rain_window_reset():
+    now_ts = time.time()
+    save_rain_window_config({
+        "anchor_ts": now_ts,
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    })
+    state = compute_rain_window_state(now_ts)
+    state["ok"] = True
+    return state
+
 
 @app.get("/api/sign/latest")
 def api_sign_latest():
@@ -2174,6 +2384,7 @@ def api_fan_set(enabled: bool = Form(...)):
 def api_sound_state():
     config = load_sound_config()
     latest = get_latest_map()
+    volume = get_sound_volume(config.get("output_device"))
     metrics = []
     for item in sorted(latest.values(), key=lambda row: (row["device_id"], row["metric_id"])):
         metrics.append({
@@ -2192,6 +2403,7 @@ def api_sound_state():
             "usb": DEFAULT_USB_AUDIO_DEVICE,
             "jack": DEFAULT_JACK_AUDIO_DEVICE,
         },
+        "volume": volume,
         "metrics": metrics,
     }
 
@@ -2219,7 +2431,19 @@ def api_sound_output(device: str = Form(...)):
     save_sound_config(config)
     sound_engine.stop_sound()
     sound_engine._stop_player_locked()
-    return {"ok": True, "config": config, "engine": sound_engine.status()}
+    return {"ok": True, "config": config, "engine": sound_engine.status(), "volume": get_sound_volume(config.get("output_device"))}
+
+
+@app.post("/api/sound/volume")
+def api_sound_volume(percent: int = Form(...)):
+    config = load_sound_config()
+    try:
+        volume = set_sound_volume(percent, config.get("output_device"))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except RuntimeError as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+    return {"ok": True, "config": config, "engine": sound_engine.status(), "volume": volume}
 
 
 @app.post("/api/sound/stop")
@@ -2625,6 +2849,21 @@ def index():
   <div id=\"rain\" class=\"panel\">
     <h2>Pluviómetro</h2>
     <div class=\"status-line\">Estado: <span id=\"rainStatus\" class=\"dot offline\"></span><span id=\"rainStatusText\">Offline</span></div>
+    <div class=\"card\" style=\"width:240px; max-width:100%;\">
+      <div style=\"display:flex; align-items:flex-start; justify-content:space-between; gap:12px; flex-wrap:wrap;\">
+        <div style=\"width:100%;\">
+          <strong>Lluvia ventana 12h</strong>
+          <div id=\"rainWindowAmount\" style=\"margin-top:8px; font-size:1.2rem;\">--</div>
+          <div id=\"rainWindowTips\" style=\"margin-top:6px; opacity:0.85;\">Tics: --</div>
+          <div id=\"rainWindowRange\" style=\"margin-top:6px; opacity:0.85;\">Ventana: --</div>
+          <div id=\"rainWindowNextReset\" style=\"margin-top:6px; opacity:0.85;\">Próximo reinicio: --</div>
+          <div id=\"rainWindowMode\" style=\"margin-top:6px; opacity:0.75;\">Modo: --</div>
+        </div>
+        <div class=\"timelapse-actions\" style=\"margin-top:0;\">
+          <button onclick=\"resetRainWindow()\">Reiniciar ventana 12h</button>
+        </div>
+      </div>
+    </div>
     <table>
       <thead><tr><th>Métrica</th><th>Valor</th><th>Actualizado</th></tr></thead>
       <tbody id=\"rainBody\"></tbody>
@@ -2776,6 +3015,11 @@ def index():
         <span id=\"soundOutputJackStatus\" class=\"dot offline\"></span>
       </div>
       <div id=\"soundEngineStatus\" style=\"margin-top:8px; opacity:0.85;\">Estado: --</div>
+      <div style=\"margin-top:12px;\">
+        <label for=\"soundVolumeRange\">Volumen salida activa</label>
+        <input id=\"soundVolumeRange\" type=\"range\" min=\"0\" max=\"100\" step=\"1\" value=\"0\" style=\"width:240px; max-width:100%; margin-top:8px; display:block;\" oninput=\"onSoundVolumePreview(this.value)\" onchange=\"setSoundVolume(this.value)\" />
+        <div id=\"soundVolumeStatus\" style=\"margin-top:6px; opacity:0.85;\">Volumen: --</div>
+      </div>
     </div>
 
     <div class=\"card\">
@@ -2913,8 +3157,11 @@ def index():
     let latestLoading = false;
     let latestQueued = false;
     let rain24hLoading = false;
+    let rainWindowLoading = false;
     let lastRain24hFetch = 0;
+    let lastRainWindowFetch = 0;
     const RAIN_HISTORY_REFRESH_MS = 60000;
+    const RAIN_WINDOW_REFRESH_MS = 10000;
     let cameraStarted = false;
     let soundUiLoaded = false;
     let timelapseUiLoaded = false;
@@ -3570,6 +3817,9 @@ def index():
           const deg = getMetric(data, 'wind_direction_deg');
           value = windCardinal(deg ? Number(deg.value) : NaN);
         }}
+        if (m.device_id === 'sensor_community_1' && typeof value === 'number') {{
+          value = value.toFixed(2);
+        }}
         const tr = document.createElement('tr');
         tr.innerHTML = `<td>${{dotHtml(m.ts)}} ${{label}}</td><td>${{value}} ${{unit}}</td><td>${{new Date(m.ts*1000).toLocaleString()}}</td>`;
         body.appendChild(tr);
@@ -3899,10 +4149,22 @@ async function renderForecast(data) {{
       const outputLabel = outputDevice.includes('CD002') ? 'USB' : (outputDevice.includes('Headphones') ? 'Jack' : (outputDevice || '--'));
       const usbActive = outputDevice.includes('CD002');
       const jackActive = outputDevice.includes('Headphones');
+      const volume = payload.volume || {{}};
 
       const status = document.getElementById('soundEngineStatus');
       if (status) {{
         status.textContent = `Estado: ${{engine.enabled ? 'activo' : 'parado'}} | salida: ${{outputLabel}} | reproduciendo: ${{engine.playing ? (engine.current_name || 'sí') : 'no'}}`;
+      }}
+
+      const volumeRange = document.getElementById('soundVolumeRange');
+      const volumeStatus = document.getElementById('soundVolumeStatus');
+      if (volumeRange && volume.percent != null) {{
+        volumeRange.value = String(volume.percent);
+      }}
+      if (volumeStatus) {{
+        volumeStatus.textContent = volume.percent != null
+          ? `Volumen: ${{volume.percent}}% | salida activa: ${{outputLabel}}`
+          : `Volumen no disponible | salida activa: ${{outputLabel}}`;
       }}
 
       const usbStatus = document.getElementById('soundOutputUsbStatus');
@@ -3975,6 +4237,22 @@ async function renderForecast(data) {{
       const form = new FormData();
       form.append('device', device);
       await fetch('/api/sound/output', {{ method: 'POST', body: form }});
+      await loadSoundState();
+    }}
+
+    function onSoundVolumePreview(value) {{
+      const status = document.getElementById('soundVolumeStatus');
+      if (!status || !soundState) return;
+      const config = soundState.config || {{}};
+      const outputDevice = config.output_device || '';
+      const outputLabel = outputDevice.includes('CD002') ? 'USB' : (outputDevice.includes('Headphones') ? 'Jack' : (outputDevice || '--'));
+      status.textContent = `Volumen: ${{value}}% | salida activa: ${{outputLabel}}`;
+    }}
+
+    async function setSoundVolume(value) {{
+      const form = new FormData();
+      form.append('percent', String(value));
+      await fetch('/api/sound/volume', {{ method: 'POST', body: form }});
       await loadSoundState();
     }}
 
@@ -4077,13 +4355,15 @@ async function renderForecast(data) {{
       const uvVoltage = getMetric(data, 'uv_voltage_v');
       const t2 = getMetric(data, 'temp_ground_c');
       const rh2 = getMetric(data, 'rh_ground_pct');
+      const p2 = getMetric(data, 'pressure_ground_hpa');
       setCard(document.getElementById('dashBme'), 'Temp / Humedad / Presión', [
-        ['Temperatura', t ? `${{t.value}} ${{metricUnit('temp_c', t.unit)}}` : '--'],
-        ['Humedad', rh ? `${{rh.value}} ${{metricUnit('rh_pct', rh.unit)}}` : '--'],
-        ['Presión', p ? `${{p.value}} ${{metricUnit('pressure_hpa', p.unit)}}` : '--'],
+        ['Temperatura', t ? `${{Number(t.value).toFixed(2)}} ${{metricUnit('temp_c', t.unit)}}` : '--'],
+        ['Humedad', rh ? `${{Number(rh.value).toFixed(2)}} ${{metricUnit('rh_pct', rh.unit)}}` : '--'],
+        ['Presión', p ? `${{Number(p.value).toFixed(2)}} ${{metricUnit('pressure_hpa', p.unit)}}` : '--'],
         ['Temp suelo (sombra)', t2 ? `${{t2.value}} ${{metricUnit('temp_ground_c', t2.unit)}}` : '--'],
-        ['Humedad suelo (sombra)', rh2 ? `${{rh2.value}} ${{metricUnit('rh_ground_pct', rh2.unit)}}` : '--']
-      ], max_ts(t, rh, p, t2, rh2));
+        ['Humedad suelo (sombra)', rh2 ? `${{rh2.value}} ${{metricUnit('rh_ground_pct', rh2.unit)}}` : '--'],
+        ['Presión suelo (sombra)', p2 ? `${{p2.value}} ${{metricUnit('pressure_ground_hpa', p2.unit)}}` : '--']
+      ], max_ts(t, rh, p, t2, rh2, p2));
 
       const lightTs = Math.max(
         latestTsByDevice(data, 'light_mcu'),
@@ -4142,10 +4422,11 @@ async function renderForecast(data) {{
 
       renderWind(data);
       renderSimpleTable('rainBody', ['rain_tips_total','rain_mm_total','rain_mm_interval','rain_rate_mmh','rain_last_tip_ms','rain_since_last_tip_ms','rain_mm'], data);
-      renderSimpleTable('bmeBody', ['temp_c','rh_pct','pressure_hpa','light_lux','uv_raw','uv_voltage_v','temp_ground_c','rh_ground_pct'], data);
+      renderSimpleTable('bmeBody', ['temp_c','rh_pct','pressure_hpa','light_lux','uv_raw','uv_voltage_v','temp_ground_c','rh_ground_pct','pressure_ground_hpa'], data);
       renderSimpleTable('airBody', ['pm10_ugm3','pm2_5_ugm3'], data);
       renderSimpleTable('gpsBody', ['gps_lat','gps_lon','gps_alt'], data);
       renderGPS(data);
+      loadRainWindow();
       loadRain24h();
       }} finally {{
         latestLoading = false;
@@ -4249,6 +4530,59 @@ async function renderForecast(data) {{
       ctx.strokeStyle = '#2a6';
       ctx.lineWidth = 2;
       ctx.stroke();
+    }}
+
+    function formatRainWindowTs(ts) {{
+      if (!ts) return '--';
+      return new Date(ts * 1000).toLocaleString();
+    }}
+
+    function formatRainWindowRemaining(targetTs) {{
+      if (!targetTs) return '--';
+      const remaining = Math.max(0, Math.round(targetTs - (Date.now() / 1000)));
+      const hours = Math.floor(remaining / 3600);
+      const minutes = Math.floor((remaining % 3600) / 60);
+      return hours + 'h ' + String(minutes).padStart(2, '0') + 'm';
+    }}
+
+    function renderRainWindow(state) {{
+      const amount = document.getElementById('rainWindowAmount');
+      const tips = document.getElementById('rainWindowTips');
+      const range = document.getElementById('rainWindowRange');
+      const nextReset = document.getElementById('rainWindowNextReset');
+      const mode = document.getElementById('rainWindowMode');
+      if (amount) amount.textContent = state && state.window_total_mm != null ? `${{Number(state.window_total_mm).toFixed(2)}} mm` : '--';
+      if (tips) tips.textContent = state && state.window_tips_total != null ? `Tics: ${{Number(state.window_tips_total).toFixed(0)}}` : 'Tics: --';
+      if (range) range.textContent = state ? `Ventana: ${{formatRainWindowTs(state.window_start_ts)}} -> ${{formatRainWindowTs(state.window_end_ts)}}` : 'Ventana: --';
+      if (nextReset) nextReset.textContent = state ? `Próximo reinicio: ${{formatRainWindowTs(state.next_reset_ts)}} (${{formatRainWindowRemaining(state.next_reset_ts)}})` : 'Próximo reinicio: --';
+      if (mode) {{
+        if (!state) mode.textContent = 'Modo: --';
+        else if (state.window_source === 'manual') mode.textContent = 'Modo: anclaje manual cada 12h';
+        else mode.textContent = 'Modo: ventana automática 00:00 / 12:00';
+      }}
+    }}
+
+    async function loadRainWindow(force = false) {{
+      const now = Date.now();
+      if (rainWindowLoading) return;
+      if (!force && (now - lastRainWindowFetch) < RAIN_WINDOW_REFRESH_MS) return;
+      rainWindowLoading = true;
+      try {{
+        const res = await fetch('/api/rain/window');
+        const data = await res.json();
+        renderRainWindow(data);
+        lastRainWindowFetch = Date.now();
+      }} finally {{
+        rainWindowLoading = false;
+      }}
+    }}
+
+    async function resetRainWindow() {{
+      const res = await fetch('/api/rain/window/reset', {{ method: 'POST' }});
+      const data = await res.json();
+      renderRainWindow(data);
+      lastRainWindowFetch = Date.now();
+      await loadRain24h(true);
     }}
 
     async function loadHistory() {{
@@ -4468,4 +4802,7 @@ async function renderForecast(data) {{
 </body>
 </html>
 """)
+
+
+
 

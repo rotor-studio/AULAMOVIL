@@ -268,6 +268,7 @@ class Collector:
         metric_map = {
             "temperature_c": ("temp_ground_c", "C"),
             "humidity": ("rh_ground_pct", "pct"),
+            "pressure_hpa": ("pressure_ground_hpa", "hPa"),
         }
         metric = parts[2]
         mapped = metric_map.get(metric)
