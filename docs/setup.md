@@ -66,6 +66,14 @@ Payload (JSON):
 - POST /api/vapor/set
 - GET /api/fan/state
 - POST /api/fan/set
+- GET /api/vapor/sequence
+- POST /api/vapor/sequence/record
+- POST /api/vapor/sequence/play
+- POST /api/vapor/sequence/stop
+- POST /api/vapor/sequence/clear
+- GET /api/vapor/automation
+- POST /api/vapor/automation/rules
+- DELETE /api/vapor/automation/rules/{id}
 
 ## Relay ESP
 - Dual relay module:
@@ -76,6 +84,13 @@ Payload (JSON):
 - If DHCP changes the relay IP, update:
   - `vapor.base_url`
   - `fan.base_url`
+- Runtime files used by the relay workflow:
+  - `/opt/rotor-meteo/data/vapor_sequence.json`
+  - `/opt/rotor-meteo/data/vapor_automation.json`
+- Dashboard behavior:
+  - manual vapor/fan toggle
+  - sequence recorder and playback
+  - sensor-driven rules that launch the saved sequence
 
 ## LED Signs
 - Main sign endpoint:
@@ -122,6 +137,7 @@ Dashboard: http://<pi-ip>:8000/
 - Sketches committed to git should keep placeholder Wi-Fi credentials and tokens.
 - The cloud bridge now publishes `TEMP PI` from `/api/pi/health`.
 - The local 24h interpretation keeps a stable phrase for 180 seconds and can switch immediately when the state changes.
+- Sound tab now includes a volume slider for the active output.
 
 ## Install
 `
