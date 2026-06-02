@@ -102,6 +102,7 @@ CAMERA_STALE_SEC = float(CONFIG.get("camera", {}).get("stale_sec", 20))
 SOUND_DIR = "/opt/rotor-meteo/data/sounds"
 SOUND_CONFIG_PATH = "/opt/rotor-meteo/data/sound_config.json"
 FX_CONFIG_PATH = "/opt/rotor-meteo/data/fx_config.json"
+WIND_CALIBRATION_PATH = "/opt/rotor-meteo/data/wind_calibration.json"
 INTERPRETATION_MESSAGES_PATH = CONFIG.get("interpretation", {}).get(
     "messages_csv",
     "/opt/rotor-meteo/data/messages/refranes_meteorologicos_asturias.csv",
@@ -1147,6 +1148,77 @@ def save_fx_config(config):
         json.dump(config, f, ensure_ascii=False, indent=2)
 
 
+def normalize_degrees(value):
+    try:
+        deg = float(value)
+    except (TypeError, ValueError):
+        return None
+    deg = deg % 360.0
+    if deg < 0:
+        deg += 360.0
+    return deg
+
+
+def default_wind_calibration():
+    return {
+        "offset_deg": 0.0,
+        "east_reference_deg": None,
+        "updated_at": None,
+    }
+
+
+def load_wind_calibration():
+    if not os.path.exists(WIND_CALIBRATION_PATH):
+        return default_wind_calibration()
+    try:
+        with open(WIND_CALIBRATION_PATH, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if not isinstance(data, dict):
+            return default_wind_calibration()
+        calibration = default_wind_calibration()
+        calibration["offset_deg"] = normalize_degrees(data.get("offset_deg")) or 0.0
+        calibration["east_reference_deg"] = normalize_degrees(data.get("east_reference_deg"))
+        calibration["updated_at"] = data.get("updated_at")
+        return calibration
+    except Exception:
+        return default_wind_calibration()
+
+
+def save_wind_calibration(config):
+    os.makedirs(os.path.dirname(WIND_CALIBRATION_PATH), exist_ok=True)
+    calibration = default_wind_calibration()
+    calibration["offset_deg"] = normalize_degrees(config.get("offset_deg")) or 0.0
+    calibration["east_reference_deg"] = normalize_degrees(config.get("east_reference_deg"))
+    calibration["updated_at"] = config.get("updated_at")
+    with open(WIND_CALIBRATION_PATH, "w", encoding="utf-8") as f:
+        json.dump(calibration, f, ensure_ascii=False, indent=2)
+    return calibration
+
+
+def apply_wind_calibration(raw_deg, calibration=None):
+    deg = normalize_degrees(raw_deg)
+    if deg is None:
+        return None
+    calibration = calibration or load_wind_calibration()
+    offset = normalize_degrees(calibration.get("offset_deg")) or 0.0
+    return normalize_degrees(deg + offset)
+
+
+def current_wind_calibration_state():
+    calibration = load_wind_calibration()
+    latest = get_latest_map()
+    wind_dir = get_metric(latest, "wind_direction_deg", "wind_esp8266")
+    raw_deg = metric_float(wind_dir)
+    corrected_deg = apply_wind_calibration(raw_deg, calibration)
+    return {
+        "ok": True,
+        "calibration": calibration,
+        "raw_direction_deg": raw_deg,
+        "calibrated_direction_deg": corrected_deg,
+        "ts": wind_dir.get("ts") if wind_dir else None,
+    }
+
+
 def get_latest_interpretation_history():
     rows = get_recent_interpretation_history(limit=1, seconds=72 * 3600)
     return rows[0] if rows else None
@@ -1956,6 +2028,49 @@ def api_fx_state():
     }
 
 
+@app.get("/api/wind/calibration")
+def api_wind_calibration():
+    return current_wind_calibration_state()
+
+
+@app.post("/api/wind/calibration/east")
+def api_wind_calibration_east():
+    latest = get_latest_map()
+    wind_dir = get_metric(latest, "wind_direction_deg", "wind_esp8266")
+    raw_deg = metric_float(wind_dir)
+    if raw_deg is None:
+        raise HTTPException(status_code=400, detail="wind_direction_unavailable")
+    calibration = save_wind_calibration({
+        "offset_deg": normalize_degrees(90.0 - raw_deg),
+        "east_reference_deg": raw_deg,
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    })
+    corrected_deg = apply_wind_calibration(raw_deg, calibration)
+    return {
+        "ok": True,
+        "calibration": calibration,
+        "raw_direction_deg": raw_deg,
+        "calibrated_direction_deg": corrected_deg,
+        "ts": wind_dir.get("ts") if wind_dir else None,
+    }
+
+
+@app.post("/api/wind/calibration/reset")
+def api_wind_calibration_reset():
+    calibration = save_wind_calibration({
+        "offset_deg": 0.0,
+        "east_reference_deg": None,
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    })
+    return {
+        "ok": True,
+        "calibration": calibration,
+        "raw_direction_deg": None,
+        "calibrated_direction_deg": None,
+        "ts": None,
+    }
+
+
 @app.post("/api/fx/text-color")
 def api_fx_text_color(mode: str = Form(...)):
     next_mode = str(mode or "auto").lower().strip()
@@ -2460,6 +2575,14 @@ def index():
   <div id=\"wind\" class=\"panel\">
     <h2>Viento (ESP8266)</h2>
     <div class=\"status-line\">Estado: <span id=\"windStatus\" class=\"dot offline\"></span><span id=\"windStatusText\">Offline</span></div>
+    <div class=\"card\">
+      <h3>Calibración de dirección</h3>
+      <div class=\"timelapse-actions\" style=\"margin-top:8px;\">
+        <button onclick=\"calibrateWindEast()\">Calibrar Este</button>
+        <button onclick=\"resetWindCalibration()\">Reset</button>
+      </div>
+      <div id=\"windCalibrationStatus\" style=\"margin-top:10px; opacity:0.85;\">Esperando estado de calibración.</div>
+    </div>
     <table>
       <thead><tr><th>Metric</th><th>Value</th><th>Updated</th></tr></thead>
       <tbody id=\"windBody\"></tbody>
@@ -2786,13 +2909,14 @@ def index():
       const ts = Math.max(byId['wind_speed_ms'] ? byId['wind_speed_ms'].ts : 0, byId['wind_direction_deg'] ? byId['wind_direction_deg'].ts : 0);
 
       const speedStr = (speed === undefined) ? '--' : Number(speed).toFixed(2);
-      const dirStr = (dir === undefined) ? '--' : Number(dir).toFixed(0);
-      const cardinal = windCardinal(Number(dir));
+      const calibratedDeg = applyWindCalibrationDeg(dir);
+      const dirStr = (calibratedDeg === null) ? '--' : calibratedDeg.toFixed(0);
+      const cardinal = windCardinal(calibratedDeg);
       const unitSpeed = metricUnit('wind_speed_ms', 'm/s');
 
       const card = document.createElement('div');
       card.className = 'card wind-card';
-      const deg = (dir === undefined || isNaN(dir)) ? 0 : Number(dir);
+      const deg = calibratedDeg === null ? 0 : calibratedDeg;
       const tsText = ts ? new Date(ts*1000).toLocaleString() : '';
       card.innerHTML = `
         <strong>${{dotHtml(ts)}} Viento</strong>
@@ -2886,6 +3010,58 @@ def index():
     let fanState = null;
     let fanBusy = false;
     let fxState = null;
+    let windCalibration = {{ calibration: {{ offset_deg: 0.0, east_reference_deg: null, updated_at: null }} }};
+
+    function normalizeWindDeg(deg) {{
+      if (deg === null || deg === undefined || Number.isNaN(Number(deg))) return null;
+      let value = Number(deg) % 360;
+      if (value < 0) value += 360;
+      return value;
+    }}
+
+    function applyWindCalibrationDeg(deg) {{
+      const normalized = normalizeWindDeg(deg);
+      if (normalized === null) return null;
+      const offset = normalizeWindDeg(windCalibration?.calibration?.offset_deg ?? 0) ?? 0;
+      return normalizeWindDeg(normalized + offset);
+    }}
+
+    function renderWindCalibrationState(payload) {{
+      windCalibration = payload || {{ calibration: {{ offset_deg: 0.0, east_reference_deg: null, updated_at: null }} }};
+      const status = document.getElementById('windCalibrationStatus');
+      if (!status) return;
+      const calibration = windCalibration.calibration || {{}};
+      const offset = normalizeWindDeg(calibration.offset_deg ?? 0);
+      const eastRef = normalizeWindDeg(calibration.east_reference_deg);
+      const corrected = normalizeWindDeg(windCalibration.calibrated_direction_deg);
+      const raw = normalizeWindDeg(windCalibration.raw_direction_deg);
+      const updatedAt = calibration.updated_at ? new Date(calibration.updated_at).toLocaleString() : 'sin calibrar';
+      status.textContent = `Offset: ${{offset === null ? '--' : offset.toFixed(1)}} deg | lectura usada como Este: ${{eastRef === null ? '--' : eastRef.toFixed(1)}} deg | actual corregida: ${{corrected === null ? '--' : corrected.toFixed(1)}} deg | actual raw: ${{raw === null ? '--' : raw.toFixed(1)}} deg | actualizado: ${{updatedAt}}`;
+    }}
+
+    async function loadWindCalibration() {{
+      try {{
+        const res = await fetch('/api/wind/calibration', {{ cache: 'no-store' }});
+        const data = await res.json();
+        renderWindCalibrationState(data);
+      }} catch (_error) {{
+        renderWindCalibrationState(null);
+      }}
+    }}
+
+    async function calibrateWindEast() {{
+      const res = await fetch('/api/wind/calibration/east', {{ method: 'POST' }});
+      const data = await res.json();
+      renderWindCalibrationState(data);
+      loadLatest();
+    }}
+
+    async function resetWindCalibration() {{
+      const res = await fetch('/api/wind/calibration/reset', {{ method: 'POST' }});
+      const data = await res.json();
+      renderWindCalibrationState(data);
+      loadLatest();
+    }}
 
     function renderActuatorControl(prefix, state, busy, labels) {{
       const actuatorState = state || {{}};
@@ -3214,10 +3390,11 @@ def index():
       const ts = Math.max(byId['wind_speed_ms'] ? byId['wind_speed_ms'].ts : 0, byId['wind_direction_deg'] ? byId['wind_direction_deg'].ts : 0);
 
       const speedStr = (speed === undefined) ? '--' : Number(speed).toFixed(2);
-      const dirStr = (dir === undefined) ? '--' : Number(dir).toFixed(0);
-      const cardinal = windCardinal(Number(dir));
+      const calibratedDeg = applyWindCalibrationDeg(dir);
+      const dirStr = (calibratedDeg === null) ? '--' : calibratedDeg.toFixed(0);
+      const cardinal = windCardinal(calibratedDeg);
       const unitSpeed = metricUnit('wind_speed_ms', 'm/s');
-      const deg = (dir === undefined || isNaN(dir)) ? 0 : Number(dir);
+      const deg = calibratedDeg === null ? 0 : calibratedDeg;
       const tsText = ts ? new Date(ts*1000).toLocaleString() : '';
 
       const el = document.getElementById('dashWind');
@@ -3955,14 +4132,18 @@ async function renderForecast(data) {{
       rows.sort((a,b) => a.metric_id.localeCompare(b.metric_id));
       const dirDegRow = rows.find(r => r.metric_id === 'wind_direction_deg');
       const dirDeg = dirDegRow ? Number(dirDegRow.value) : undefined;
+      const calibratedDirDeg = applyWindCalibrationDeg(dirDeg);
 
       rows.forEach(v => {{
         const tr = document.createElement('tr');
         const label = metricLabel(v.metric_id);
         const unit = metricUnit(v.metric_id, v.unit);
         let value = v.value;
+        if (v.metric_id === 'wind_direction_deg') {{
+          value = calibratedDirDeg === null ? '--' : calibratedDirDeg.toFixed(0);
+        }}
         if (v.metric_id === 'wind_direction_cardinal') {{
-          value = windCardinal(dirDeg);
+          value = windCardinal(calibratedDirDeg);
         }}
         tr.innerHTML = `<td>${{label}}</td><td>${{value}} ${{unit}}</td><td>${{new Date(v.ts*1000).toLocaleString()}}</td>`;
         body.appendChild(tr);
@@ -4238,10 +4419,12 @@ async function renderForecast(data) {{
     renderVaporState({{ configured: false, online: false, relay_on: false }});
     renderFanState({{ configured: false, online: false, relay_on: false }});
     renderFxState({{ config: {{ text_color_mode: 'auto' }}, presets: [] }});
+    renderWindCalibrationState(null);
     loadLatest();
     loadVaporState();
     loadFanState();
     loadFxState();
+    loadWindCalibration();
     const activePanel = document.querySelector('.panel.active');
     if (activePanel) {{
       initializeTab(activePanel.id);
@@ -4249,6 +4432,7 @@ async function renderForecast(data) {{
     setInterval(loadVaporState, 5000);
     setInterval(loadFanState, 5000);
     setInterval(loadFxState, 10000);
+    setInterval(loadWindCalibration, 10000);
   </script>
 </body>
 </html>
