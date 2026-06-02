@@ -56,6 +56,10 @@ cloud_bridge:
       label: Lluvia
       decimals: 1
       unit: mm
+    - source: sensor_community_1/pressure_hpa
+      label: Presion
+      decimals: 1
+      unit: hPa
     - source: sensor_community_1/temp_c
       label: Temp
       decimals: 1
