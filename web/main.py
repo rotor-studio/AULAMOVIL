@@ -373,6 +373,116 @@ def get_history(metric_id, device_id=None, seconds=21600):
     return [dict(r) for r in rows]
 
 
+INTERPRETATION_HISTORY_BUCKET_SEC = 180
+INTERPRETATION_HISTORY_RETENTION_SEC = 21 * 24 * 3600
+INTERPRETATION_HISTORY_LIMIT = 8
+_interpretation_history_ready = False
+_interpretation_history_lock = threading.Lock()
+
+
+def ensure_interpretation_history_table():
+    global _interpretation_history_ready
+    if _interpretation_history_ready:
+        return
+    with _interpretation_history_lock:
+        if _interpretation_history_ready:
+            return
+        conn = get_conn()
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS interpretation_history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                bucket_key TEXT NOT NULL UNIQUE,
+                ts REAL NOT NULL,
+                source_ts REAL,
+                state_id TEXT NOT NULL,
+                state_score REAL,
+                confidence TEXT,
+                label TEXT,
+                summary TEXT,
+                detail TEXT,
+                phrase TEXT NOT NULL,
+                message_condition TEXT,
+                message_category TEXT,
+                message_priority INTEGER,
+                ranked_json TEXT
+            )
+            """
+        )
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_interpretation_history_ts ON interpretation_history(ts DESC)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_interpretation_history_state_ts ON interpretation_history(state_id, ts DESC)")
+        conn.commit()
+        conn.close()
+        _interpretation_history_ready = True
+
+
+def get_recent_interpretation_history(limit=INTERPRETATION_HISTORY_LIMIT, seconds=12 * 3600):
+    ensure_interpretation_history_table()
+    conn = get_conn()
+    cutoff = time.time() - seconds
+    rows = conn.execute(
+        """
+        SELECT ts, source_ts, state_id, state_score, confidence, label, summary, detail,
+               phrase, message_condition, message_category, message_priority
+        FROM interpretation_history
+        WHERE ts >= ?
+        ORDER BY ts DESC
+        LIMIT ?
+        """,
+        (cutoff, int(limit)),
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def record_interpretation_history(entry):
+    ensure_interpretation_history_table()
+    ts = float(entry.get("ts") or time.time())
+    state_id = str(entry.get("state_id") or "mensaje_general")
+    phrase = str(entry.get("phrase") or "").strip()
+    if not phrase:
+        return
+    bucket = int(ts // INTERPRETATION_HISTORY_BUCKET_SEC)
+    bucket_key = f"{bucket}:{state_id}:{phrase}"
+    conn = get_conn()
+    conn.execute(
+        """
+        INSERT OR IGNORE INTO interpretation_history (
+            bucket_key, ts, source_ts, state_id, state_score, confidence,
+            label, summary, detail, phrase, message_condition,
+            message_category, message_priority, ranked_json
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            bucket_key,
+            ts,
+            entry.get("source_ts"),
+            state_id,
+            entry.get("state_score"),
+            entry.get("confidence"),
+            entry.get("label"),
+            entry.get("summary"),
+            entry.get("detail"),
+            phrase,
+            entry.get("message_condition"),
+            entry.get("message_category"),
+            entry.get("message_priority"),
+            entry.get("ranked_json"),
+        ),
+    )
+    conn.execute(
+        "DELETE FROM interpretation_history WHERE ts < ?",
+        (time.time() - INTERPRETATION_HISTORY_RETENTION_SEC,),
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_recent_message_phrases(seconds=12 * 3600, limit=24):
+    rows = get_recent_interpretation_history(limit=limit, seconds=seconds)
+    return [str(row.get("phrase") or "").strip() for row in rows if row.get("phrase")]
+
+
 def sample_before(points, seconds_ago):
     if not points:
         return None
@@ -448,17 +558,22 @@ NON_VARIANT_CATEGORIES = {
 }
 
 
-def choose_candidate(rows, seed_text):
+def choose_candidate(rows, seed_text, avoid_phrases=None):
     if not rows:
         return None
     candidates = sorted(rows, key=lambda row: (-row["priority"], row["phrase"]))
     top_priority = candidates[0]["priority"]
     best = [row for row in candidates if row["priority"] == top_priority]
+    avoid = {str(item).strip() for item in (avoid_phrases or []) if str(item).strip()}
+    if avoid:
+        fresh = [row for row in best if row["phrase"] not in avoid]
+        if fresh:
+            best = fresh
     digest = hashlib.sha1(seed_text.encode("utf-8")).hexdigest()
     return best[int(digest[:8], 16) % len(best)]
 
 
-def choose_message(rows, condition, seed_text):
+def choose_message(rows, condition, seed_text, avoid_phrases=None):
     candidates = [row for row in rows if row["condition"] == condition]
     if candidates and len(candidates) == 1:
         category = (candidates[0].get("category") or "").strip()
@@ -469,16 +584,16 @@ def choose_message(rows, condition, seed_text):
                 if (row.get("category") or "").strip() == category and row["condition"] != condition
             ]
             if category_candidates:
-                chosen = choose_candidate(category_candidates, f"{seed_text}:category:{category}")
+                chosen = choose_candidate(category_candidates, f"{seed_text}:category:{category}", avoid_phrases)
                 if chosen is not None:
                     return chosen
     if candidates:
-        return choose_candidate(candidates, seed_text)
+        return choose_candidate(candidates, seed_text, avoid_phrases)
 
     candidates = [row for row in rows if row["condition"] in ("mensaje_general", "uso_general_refranero")]
     if not candidates:
         return None
-    return choose_candidate(candidates, seed_text)
+    return choose_candidate(candidates, seed_text, avoid_phrases)
 
 
 def build_message_seed(state_id, state_score, confidence, ranked, source_ts):
@@ -487,14 +602,13 @@ def build_message_seed(state_id, state_score, confidence, ranked, source_ts):
         for condition, score in ranked[:3]
     )
     base = f"{state_id}:{round(state_score, 2)}:{confidence}:{top_conditions}"
-    if confidence == "alta":
-        return f"{base}:{int(source_ts // 180)}"
-    return base
+    return f"{base}:{int(source_ts // 180)}"
 
 
 def compute_local_24h_interpretation():
     latest = get_latest_map()
     messages = load_interpretation_messages()
+    recent_phrases = get_recent_message_phrases()
 
     pressure = get_metric(latest, "pressure_hpa", "sensor_community_1")
     humidity = get_metric(latest, "rh_pct", "sensor_community_1")
@@ -713,7 +827,7 @@ def compute_local_24h_interpretation():
     observed_count = sum(1 for value in observed_items if value is not None)
     confidence = confidence_from_score(state_score, observed_count)
     seed = build_message_seed(state_id, state_score, confidence, ranked, time.time())
-    message = choose_message(messages, state_id, seed)
+    message = choose_message(messages, state_id, seed, recent_phrases)
 
     fallback_text = "La estación lee el tiempo de cerca: hacen falta más señales para afinar el mensaje."
     phrase = message["phrase"] if message else fallback_text
@@ -730,6 +844,22 @@ def compute_local_24h_interpretation():
     source_ts = max([
         item["ts"] for item in [pressure, humidity, temperature, wind, rain_rate, rain_total, light, uv_raw, uv_voltage, pm10, pm25, ground_temp, ground_humidity] if item
     ], default=0)
+
+    record_interpretation_history({
+        "ts": time.time(),
+        "source_ts": source_ts,
+        "state_id": state_id,
+        "state_score": round(state_score, 2),
+        "confidence": confidence,
+        "label": state_id.replace("_", " "),
+        "summary": summary,
+        "detail": detail,
+        "phrase": phrase,
+        "message_condition": message["condition"] if message else None,
+        "message_category": message["category"] if message else None,
+        "message_priority": message["priority"] if message else None,
+        "ranked_json": json.dumps(ranked[:8], ensure_ascii=False, separators=(",", ":")),
+    })
 
     return {
         "ok": True,
@@ -767,6 +897,7 @@ def compute_local_24h_interpretation():
             }
             for condition, score in ranked[:8]
         ],
+        "history": get_recent_interpretation_history(),
         "metrics": {
             "temp_c": temp_val,
             "rh_pct": humidity_val,
@@ -1907,6 +2038,7 @@ def api_timelapse_gif(interval_sec: float = Query(1.0)):
 
 @app.on_event("startup")
 def startup():
+    ensure_interpretation_history_table()
     sound_engine.start()
 
 
@@ -2175,6 +2307,11 @@ def index():
     <div class=\"card\">
       <h3>Señales observadas</h3>
       <div id=\"forecastSignals\"></div>
+    </div>
+    <div class=\"card\">
+      <h3>Histórico reciente</h3>
+      <p style=\"opacity:0.8; margin-top:-4px;\">Se guarda una nueva emisión cuando cambia el estado o pasan 3 minutos en estabilidad.</p>
+      <div id=\"forecastHistory\"></div>
     </div>
   </div>
   <div id=\"gps\" class=\"panel\">
@@ -3134,6 +3271,7 @@ async function buildForecast(data) {{
         summary: message.phrase || state.summary || 'Sin mensaje disponible.',
         detail: state.detail || message.notes || '',
         confidence: state.confidence || 'baja',
+        history: Array.isArray(payload.history) ? payload.history : [],
         signals: ranked.slice(0, 5).map(item => `${{item.condition}} (${{item.score}}): ${{(item.evidence || []).join(' / ')}}`),
         variables: [
           {{ name: 'Estado lógico elegido', value: state.id || 'sin dato', description: state.summary || '' }},
@@ -3230,6 +3368,7 @@ async function buildForecast(data) {{
     summary,
     detail,
     confidence,
+    history: [],
     signals,
     variables: [
       {{ name: 'Presión atmosférica', value: pressure ? `${{formatMaybe(pressure.value, 1)}} hPa` : 'sin dato', description: 'Cuando baja con rapidez suele avisar de inestabilidad. Cuando sube, suele acompañar tiempo más estable.' }},
@@ -3279,6 +3418,7 @@ async function renderForecast(data) {{
   const variables = document.getElementById('forecastVariables');
   const algorithm = document.getElementById('forecastAlgorithm');
   const signals = document.getElementById('forecastSignals');
+  const history = document.getElementById('forecastHistory');
   if (title) title.innerHTML = `<strong>${{forecast.label}}</strong>`;
   if (summary) summary.textContent = repeatedSummary ? '' : forecast.summary;
   if (detail) detail.textContent = forecast.detail;
@@ -3286,6 +3426,23 @@ async function renderForecast(data) {{
   if (variables) variables.innerHTML = forecast.variables.map(v => `<div style="margin-bottom:10px;"><strong>${{v.name}}</strong>: ${{v.value}}<br><span style="opacity:0.85;">${{v.description}}</span></div>`).join('');
   if (algorithm) algorithm.innerHTML = `<ol>${{forecast.algorithm.map(step => `<li style="margin-bottom:8px;">${{step}}</li>`).join('')}}</ol>`;
   if (signals) signals.innerHTML = forecast.signals.length ? `<ul>${{forecast.signals.map(item => `<li style="margin-bottom:8px;">${{item}}</li>`).join('')}}</ul>` : '<p>Sin señales suficientes todavía.</p>';
+  if (history) {{
+    const rows = Array.isArray(forecast.history) ? forecast.history : [];
+    history.innerHTML = rows.length ? rows.map((item, index) => {{
+      const when = item.ts ? new Date(item.ts * 1000).toLocaleTimeString([], {{hour: '2-digit', minute: '2-digit'}}) : '--:--';
+      const state = item.label || item.state_id || 'estado';
+      const confidenceTag = item.confidence ? ` <span style="opacity:0.72;">${{item.confidence}}</span>` : '';
+      const repeatTag = index > 0 && item.phrase === rows[index - 1].phrase ? ' <span style="opacity:0.72;">repetida</span>' : '';
+      const summaryLine = item.summary ? `<div style="opacity:0.82; margin-top:4px;">${{item.summary}}</div>` : '';
+      return `
+        <div style="padding:10px 0; border-bottom:1px solid rgba(22,50,74,0.12);">
+          <div><strong>${{when}}</strong> · ${{state}}${{confidenceTag}}${{repeatTag}}</div>
+          <div style="margin-top:4px;">${{item.phrase || ''}}</div>
+          ${{summaryLine}}
+        </div>
+      `;
+    }}).join('') : '<p>Sin histórico suficiente todavía.</p>';
+  }}
 }}
 
 
