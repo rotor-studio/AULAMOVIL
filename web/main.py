@@ -91,6 +91,37 @@ def text_for_sign(value):
     return " ".join(text.split())
 
 
+def sanitize_filename(value):
+    text = str(value or "").strip()
+    text = unicodedata.normalize("NFKD", text)
+    text = "".join(ch for ch in text if not unicodedata.combining(ch))
+    safe = []
+    for ch in text:
+        if ch.isalnum() or ch in {"-", "_", "."}:
+            safe.append(ch)
+        elif ch.isspace():
+            safe.append("_")
+    cleaned = "".join(safe).strip("._")
+    return cleaned or "sound"
+
+
+def unique_sound_filename(original):
+    stem, ext = os.path.splitext(original)
+    safe_stem = sanitize_filename(stem)
+    safe_ext = ext.lower()
+    candidate = f"{safe_stem}{safe_ext}"
+    path = os.path.join(SOUND_DIR, candidate)
+    if not os.path.exists(path):
+        return candidate
+    suffix = 2
+    while True:
+        candidate = f"{safe_stem}_{suffix}{safe_ext}"
+        path = os.path.join(SOUND_DIR, candidate)
+        if not os.path.exists(path):
+            return candidate
+        suffix += 1
+
+
 CONFIG = load_config()
 REGISTRY = load_yaml("/opt/rotor-meteo/config/registry.yaml")
 DB_PATH = CONFIG["storage"]["sqlite_path"]
@@ -2221,7 +2252,7 @@ async def api_sound_upload(file: UploadFile = File(...)):
     ext = os.path.splitext(original)[1].lower()
     if ext not in {".wav", ".mp3", ".ogg"}:
         raise HTTPException(status_code=400, detail="Formato no soportado. Usa wav, mp3 u ogg.")
-    safe_name = f"{uuid.uuid4().hex}{ext}"
+    safe_name = unique_sound_filename(original)
     path = os.path.join(SOUND_DIR, safe_name)
     with open(path, "wb") as out:
         shutil.copyfileobj(file.file, out)
