@@ -136,6 +136,8 @@ SOUND_CONFIG_PATH = "/opt/rotor-meteo/data/sound_config.json"
 FX_CONFIG_PATH = "/opt/rotor-meteo/data/fx_config.json"
 WIND_CALIBRATION_PATH = "/opt/rotor-meteo/data/wind_calibration.json"
 RAIN_WINDOW_CONFIG_PATH = "/opt/rotor-meteo/data/rain_window_config.json"
+VAPOR_SEQUENCE_PATH = "/opt/rotor-meteo/data/vapor_sequence.json"
+VAPOR_AUTOMATION_CONFIG_PATH = "/opt/rotor-meteo/data/vapor_automation.json"
 INTERPRETATION_MESSAGES_PATH = CONFIG.get("interpretation", {}).get(
     "messages_csv",
     "/opt/rotor-meteo/data/messages/refranes_meteorologicos_asturias.csv",
@@ -1219,6 +1221,366 @@ def vapor_request(method, path, fields=None):
 
 def fan_request(method, path, fields=None):
     return actuator_request(method, "fan", path, fields)
+
+
+def default_vapor_sequence():
+    return {
+        "version": 1,
+        "initial": {
+            "vapor": False,
+            "fan": False,
+        },
+        "steps": [],
+        "duration_sec": 0.0,
+        "created_at": None,
+        "updated_at": None,
+        "last_played_at": None,
+    }
+
+
+def load_vapor_sequence():
+    if not os.path.exists(VAPOR_SEQUENCE_PATH):
+        return default_vapor_sequence()
+    try:
+        with open(VAPOR_SEQUENCE_PATH, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if not isinstance(data, dict):
+            return default_vapor_sequence()
+        payload = default_vapor_sequence()
+        payload.update(data)
+        if not isinstance(payload.get("initial"), dict):
+            payload["initial"] = {"vapor": False, "fan": False}
+        payload["initial"].setdefault("vapor", False)
+        payload["initial"].setdefault("fan", False)
+        steps = payload.get("steps")
+        payload["steps"] = steps if isinstance(steps, list) else []
+        payload["duration_sec"] = float(payload.get("duration_sec") or 0.0)
+        return payload
+    except Exception:
+        return default_vapor_sequence()
+
+
+def save_vapor_sequence(sequence):
+    os.makedirs(os.path.dirname(VAPOR_SEQUENCE_PATH), exist_ok=True)
+    payload = default_vapor_sequence()
+    payload.update(sequence or {})
+    payload["initial"] = {
+        "vapor": bool((payload.get("initial") or {}).get("vapor", False)),
+        "fan": bool((payload.get("initial") or {}).get("fan", False)),
+    }
+    normalized_steps = []
+    for step in payload.get("steps", []):
+        if not isinstance(step, dict):
+            continue
+        actuator = str(step.get("actuator") or "").strip().lower()
+        if actuator not in ("vapor", "fan"):
+            continue
+        try:
+            at_ms = int(round(float(step.get("at_ms", 0))))
+        except Exception:
+            at_ms = 0
+        normalized_steps.append({
+            "actuator": actuator,
+            "enabled": bool(step.get("enabled", False)),
+            "at_ms": max(0, at_ms),
+        })
+    normalized_steps.sort(key=lambda item: item["at_ms"])
+    payload["steps"] = normalized_steps
+    duration_ms = normalized_steps[-1]["at_ms"] if normalized_steps else 0
+    payload["duration_sec"] = round(duration_ms / 1000.0, 3)
+    with open(VAPOR_SEQUENCE_PATH, "w", encoding="utf-8") as f:
+        json.dump(payload, f, ensure_ascii=False, indent=2)
+    return payload
+
+
+vapor_sequence_lock = threading.Lock()
+vapor_sequence_runtime = {
+    "recording": False,
+    "record_started_monotonic": None,
+    "playing": False,
+    "play_started_monotonic": None,
+    "play_thread": None,
+    "play_stop_event": threading.Event(),
+}
+
+
+def vapor_sequence_status():
+    sequence = load_vapor_sequence()
+    with vapor_sequence_lock:
+        record_started = vapor_sequence_runtime.get("record_started_monotonic")
+        play_started = vapor_sequence_runtime.get("play_started_monotonic")
+        recording = bool(vapor_sequence_runtime.get("recording"))
+        playing = bool(vapor_sequence_runtime.get("playing"))
+    now_mono = time.monotonic()
+    play_elapsed_sec = round(now_mono - play_started, 2) if playing and play_started else 0.0
+    current_step_index = None
+    if playing and play_started:
+        elapsed_ms = max(0, int(round((now_mono - play_started) * 1000.0)))
+        for index, step in enumerate(sequence.get("steps", [])):
+            if elapsed_ms >= int(step.get("at_ms", 0)):
+                current_step_index = index
+            else:
+                break
+    return {
+        "ok": True,
+        "recording": recording,
+        "playing": playing,
+        "step_count": len(sequence.get("steps", [])),
+        "duration_sec": float(sequence.get("duration_sec") or 0.0),
+        "created_at": sequence.get("created_at"),
+        "updated_at": sequence.get("updated_at"),
+        "last_played_at": sequence.get("last_played_at"),
+        "initial": sequence.get("initial", {"vapor": False, "fan": False}),
+        "steps": sequence.get("steps", []),
+        "record_elapsed_sec": round(now_mono - record_started, 2) if recording and record_started else 0.0,
+        "play_elapsed_sec": play_elapsed_sec,
+        "current_step_index": current_step_index,
+    }
+
+
+def stop_vapor_sequence_playback():
+    thread = None
+    with vapor_sequence_lock:
+        vapor_sequence_runtime["play_stop_event"].set()
+        thread = vapor_sequence_runtime.get("play_thread")
+    if thread and thread.is_alive():
+        thread.join(timeout=1.0)
+    with vapor_sequence_lock:
+        vapor_sequence_runtime["playing"] = False
+        vapor_sequence_runtime["play_started_monotonic"] = None
+        vapor_sequence_runtime["play_thread"] = None
+        vapor_sequence_runtime["play_stop_event"] = threading.Event()
+
+
+def start_vapor_sequence_recording():
+    stop_vapor_sequence_playback()
+    vapor_state = api_vapor_state()
+    fan_state = api_fan_state()
+    sequence = default_vapor_sequence()
+    sequence["initial"] = {
+        "vapor": bool(vapor_state.get("relay_on", False)),
+        "fan": bool(fan_state.get("relay_on", False)),
+    }
+    now_iso = datetime.now(timezone.utc).isoformat()
+    sequence["created_at"] = now_iso
+    sequence["updated_at"] = now_iso
+    save_vapor_sequence(sequence)
+    with vapor_sequence_lock:
+        vapor_sequence_runtime["recording"] = True
+        vapor_sequence_runtime["record_started_monotonic"] = time.monotonic()
+    return vapor_sequence_status()
+
+
+def stop_vapor_sequence_recording():
+    with vapor_sequence_lock:
+        vapor_sequence_runtime["recording"] = False
+        vapor_sequence_runtime["record_started_monotonic"] = None
+    return vapor_sequence_status()
+
+
+def clear_vapor_sequence():
+    stop_vapor_sequence_playback()
+    with vapor_sequence_lock:
+        vapor_sequence_runtime["recording"] = False
+        vapor_sequence_runtime["record_started_monotonic"] = None
+    return save_vapor_sequence(default_vapor_sequence())
+
+
+def append_vapor_sequence_step(actuator, enabled):
+    with vapor_sequence_lock:
+        if not vapor_sequence_runtime.get("recording"):
+            return None
+        started = vapor_sequence_runtime.get("record_started_monotonic")
+    if not started:
+        return None
+    elapsed_ms = int(round((time.monotonic() - started) * 1000.0))
+    sequence = load_vapor_sequence()
+    steps = list(sequence.get("steps", []))
+    step = {
+        "actuator": str(actuator).strip().lower(),
+        "enabled": bool(enabled),
+        "at_ms": max(0, elapsed_ms),
+    }
+    if steps:
+        last = steps[-1]
+        if last.get("actuator") == step["actuator"] and bool(last.get("enabled")) == step["enabled"]:
+            return sequence
+    steps.append(step)
+    sequence["steps"] = steps
+    sequence["updated_at"] = datetime.now(timezone.utc).isoformat()
+    return save_vapor_sequence(sequence)
+
+
+def set_actuator_enabled(actuator, enabled):
+    next_enabled = "true" if enabled else "false"
+    if actuator == "vapor":
+        return vapor_request("POST", "/api/vapor/set", {"enabled": next_enabled})
+    if actuator == "fan":
+        return fan_request("POST", "/api/fan/set", {"enabled": next_enabled})
+    raise ValueError("invalid_actuator")
+
+
+def run_vapor_sequence_playback(sequence):
+    stop_event = None
+    with vapor_sequence_lock:
+        stop_event = vapor_sequence_runtime.get("play_stop_event")
+    try:
+        initial = sequence.get("initial", {})
+        set_actuator_enabled("vapor", bool(initial.get("vapor", False)))
+        set_actuator_enabled("fan", bool(initial.get("fan", False)))
+        steps = list(sequence.get("steps", []))
+        started = time.monotonic()
+        for step in steps:
+            target_delay = max(0.0, float(step.get("at_ms", 0)) / 1000.0)
+            while True:
+                if stop_event and stop_event.wait(0.02):
+                    return
+                remaining = target_delay - (time.monotonic() - started)
+                if remaining <= 0:
+                    break
+                if stop_event and stop_event.wait(min(0.1, remaining)):
+                    return
+            set_actuator_enabled(step.get("actuator"), bool(step.get("enabled", False)))
+        sequence["last_played_at"] = datetime.now(timezone.utc).isoformat()
+        save_vapor_sequence(sequence)
+    finally:
+        with vapor_sequence_lock:
+            vapor_sequence_runtime["playing"] = False
+            vapor_sequence_runtime["play_started_monotonic"] = None
+            vapor_sequence_runtime["play_thread"] = None
+            vapor_sequence_runtime["play_stop_event"] = threading.Event()
+
+
+def start_vapor_sequence_playback():
+    sequence = load_vapor_sequence()
+    if not sequence.get("steps"):
+        raise ValueError("sequence_empty")
+    with vapor_sequence_lock:
+        if vapor_sequence_runtime.get("recording"):
+            raise ValueError("sequence_recording")
+    stop_vapor_sequence_playback()
+    with vapor_sequence_lock:
+        vapor_sequence_runtime["playing"] = True
+        vapor_sequence_runtime["play_started_monotonic"] = time.monotonic()
+        vapor_sequence_runtime["play_stop_event"] = threading.Event()
+        thread = threading.Thread(
+            target=run_vapor_sequence_playback,
+            args=(sequence,),
+            daemon=True,
+        )
+        vapor_sequence_runtime["play_thread"] = thread
+        thread.start()
+    return vapor_sequence_status()
+
+
+def default_vapor_automation_config():
+    return {
+        "rules": [],
+    }
+
+
+def load_vapor_automation_config():
+    if not os.path.exists(VAPOR_AUTOMATION_CONFIG_PATH):
+        return default_vapor_automation_config()
+    try:
+        with open(VAPOR_AUTOMATION_CONFIG_PATH, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if not isinstance(data, dict):
+            return default_vapor_automation_config()
+        data.setdefault("rules", [])
+        return data
+    except Exception:
+        return default_vapor_automation_config()
+
+
+def save_vapor_automation_config(config):
+    os.makedirs(os.path.dirname(VAPOR_AUTOMATION_CONFIG_PATH), exist_ok=True)
+    with open(VAPOR_AUTOMATION_CONFIG_PATH, "w", encoding="utf-8") as f:
+        json.dump(config, f, ensure_ascii=False, indent=2)
+
+
+class VaporAutomationEngine:
+    def __init__(self):
+        self.stop_event = threading.Event()
+        self.thread = None
+        self.rule_state = {}
+        self.active_rule_ids = set()
+
+    def start(self):
+        if not self.thread or not self.thread.is_alive():
+            self.stop_event.clear()
+            self.thread = threading.Thread(target=self.run, daemon=True)
+            self.thread.start()
+
+    def status(self):
+        return {
+            "running": bool(self.thread and self.thread.is_alive()),
+            "active_rule_ids": sorted(self.active_rule_ids),
+        }
+
+    def run(self):
+        while not self.stop_event.wait(1.0):
+            config = load_vapor_automation_config()
+            latest = get_latest_map()
+            next_active = set()
+            rules = config.get("rules", [])
+            for rule in rules:
+                if not rule.get("enabled", True):
+                    self.rule_state.pop(rule.get("id"), None)
+                    continue
+                metric_id = rule.get("metric_id")
+                device_id = rule.get("device_id")
+                if not metric_id:
+                    continue
+                item = get_metric(latest, metric_id, device_id)
+                if not item:
+                    continue
+                try:
+                    value = float(item["value"])
+                except Exception:
+                    continue
+                state = self.rule_state.setdefault(rule["id"], {
+                    "last_value": None,
+                    "last_trigger_ts": 0.0,
+                    "active": False,
+                })
+                min_value = rule.get("min_value")
+                max_value = rule.get("max_value")
+                min_delta = float(rule.get("min_delta") or 0.0)
+                cooldown = float(rule.get("cooldown_sec") or 10.0)
+                in_range = True
+                if min_value not in (None, ""):
+                    in_range = in_range and value >= float(min_value)
+                if max_value not in (None, ""):
+                    in_range = in_range and value <= float(max_value)
+                delta = None if state["last_value"] is None else abs(value - state["last_value"])
+                changed = state["last_value"] is None or delta >= min_delta
+                now = time.time()
+                if in_range:
+                    next_active.add(str(rule["id"]))
+                should_trigger = (
+                    in_range
+                    and changed
+                    and (now - state["last_trigger_ts"] >= cooldown)
+                )
+                if should_trigger:
+                    try:
+                        runtime = vapor_sequence_status()
+                        if not runtime.get("recording") and not runtime.get("playing"):
+                            start_vapor_sequence_playback()
+                            state["last_trigger_ts"] = now
+                            state["active"] = True
+                    except Exception:
+                        pass
+                elif not in_range:
+                    state["active"] = False
+                elif now - state["last_trigger_ts"] >= cooldown:
+                    state["active"] = False
+                state["last_value"] = value
+            self.active_rule_ids = next_active
+
+
+vapor_automation_engine = VaporAutomationEngine()
 
 
 
@@ -2363,9 +2725,12 @@ def api_vapor_state():
 
 @app.post("/api/vapor/set")
 def api_vapor_set(enabled: bool = Form(...)):
-    return vapor_request("POST", "/api/vapor/set", {
+    result = vapor_request("POST", "/api/vapor/set", {
         "enabled": "true" if enabled else "false",
     })
+    if result.get("ok") and result.get("online") and result.get("configured"):
+        append_vapor_sequence_step("vapor", bool(result.get("relay_on", enabled)))
+    return result
 
 
 @app.get("/api/fan/state")
@@ -2375,9 +2740,99 @@ def api_fan_state():
 
 @app.post("/api/fan/set")
 def api_fan_set(enabled: bool = Form(...)):
-    return fan_request("POST", "/api/fan/set", {
+    result = fan_request("POST", "/api/fan/set", {
         "enabled": "true" if enabled else "false",
     })
+    if result.get("ok") and result.get("online") and result.get("configured"):
+        append_vapor_sequence_step("fan", bool(result.get("relay_on", enabled)))
+    return result
+
+
+@app.get("/api/vapor/sequence")
+def api_vapor_sequence():
+    return vapor_sequence_status()
+
+
+@app.post("/api/vapor/sequence/record")
+def api_vapor_sequence_record(recording: bool = Form(...)):
+    if recording:
+        return start_vapor_sequence_recording()
+    return stop_vapor_sequence_recording()
+
+
+@app.post("/api/vapor/sequence/play")
+def api_vapor_sequence_play():
+    try:
+        return start_vapor_sequence_playback()
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.post("/api/vapor/sequence/stop")
+def api_vapor_sequence_stop():
+    stop_vapor_sequence_playback()
+    return vapor_sequence_status()
+
+
+@app.post("/api/vapor/sequence/clear")
+def api_vapor_sequence_clear():
+    clear_vapor_sequence()
+    return vapor_sequence_status()
+
+
+@app.get("/api/vapor/automation")
+def api_vapor_automation():
+    config = load_vapor_automation_config()
+    latest = get_latest_map()
+    metrics = []
+    for item in sorted(latest.values(), key=lambda row: (row["device_id"], row["metric_id"])):
+        metrics.append({
+            "device_id": item["device_id"],
+            "metric_id": item["metric_id"],
+            "label": f"{item['device_id']} / {get_metric_name(item['metric_id'])}",
+            "value": item["value"],
+            "unit": get_metric_unit(item["metric_id"], item.get("unit")),
+        })
+    return {
+        "ok": True,
+        "config": config,
+        "metrics": metrics,
+        "engine": vapor_automation_engine.status(),
+        "sequence": vapor_sequence_status(),
+    }
+
+
+@app.post("/api/vapor/automation/rules")
+def api_vapor_automation_rules(payload: dict):
+    rules = payload.get("rules")
+    if not isinstance(rules, list):
+        raise HTTPException(status_code=400, detail="rules debe ser una lista")
+    normalized = []
+    for raw in rules:
+        rid = raw.get("id") or uuid.uuid4().hex
+        normalized.append({
+            "id": rid,
+            "name": str(raw.get("name") or rid),
+            "device_id": raw.get("device_id") or "",
+            "metric_id": raw.get("metric_id") or "",
+            "min_value": raw.get("min_value"),
+            "max_value": raw.get("max_value"),
+            "min_delta": float(raw.get("min_delta") or 0.0),
+            "cooldown_sec": float(raw.get("cooldown_sec") or 10.0),
+            "enabled": bool(raw.get("enabled", True)),
+        })
+    config = load_vapor_automation_config()
+    config["rules"] = normalized
+    save_vapor_automation_config(config)
+    return {"ok": True, "config": config}
+
+
+@app.delete("/api/vapor/automation/rules/{rule_id}")
+def api_vapor_automation_delete_rule(rule_id: str):
+    config = load_vapor_automation_config()
+    config["rules"] = [rule for rule in config.get("rules", []) if rule.get("id") != rule_id]
+    save_vapor_automation_config(config)
+    return {"ok": True, "config": config}
 
 
 @app.get("/api/sound/state")
@@ -2620,6 +3075,7 @@ def api_timelapse_gif(interval_sec: float = Query(1.0)):
 def startup():
     ensure_interpretation_history_table()
     sound_engine.start()
+    vapor_automation_engine.start()
 
 
 @app.get("/")
@@ -2955,11 +3411,52 @@ def index():
         <div id=\"fanStatusDetail\" style=\"margin-top:12px; opacity:0.85;\">Control independiente del ventilador.</div>
       </div>
       <div class=\"card\">
-        <h3>Notas</h3>
-        <p>Estos controles conmutan dos relés independientes del ESP8266 para vapor y ventilador.</p>
-        <p>Desde aquí se enciende o apaga el transformador que alimenta los vaporizadores.</p>
-        <p>El piloto verde indica salida activa. Rojo indica apagado. Gris indica que la Pi no logra hablar con el módulo.</p>
-        <p>La misma interfaz permite accionar por separado el vapor y el ventilador.</p>
+        <h3>Secuencia</h3>
+        <div id=\"vaporSequenceStatus\" style=\"opacity:0.9;\">Sin secuencia grabada.</div>
+        <div id=\"vaporSequenceMeta\" style=\"margin-top:8px; opacity:0.82;\">Pasos: 0 | Duración: 0.0 s</div>
+        <div id=\"vaporSequenceInitial\" style=\"margin-top:6px; opacity:0.82;\">Inicio: vapor OFF | ventilador OFF</div>
+        <div id=\"vaporSequenceRuntime\" style=\"margin-top:6px; opacity:0.82;\">Grabación: parada | Reproducción: parada</div>
+        <div class=\"timelapse-actions\" style=\"margin-top:12px;\">
+          <button id=\"vaporSequenceRecordButton\" onclick=\"toggleVaporSequenceRecording()\">Grabar secuencia</button>
+          <button id=\"vaporSequencePlayButton\" onclick=\"playVaporSequence()\">Play</button>
+          <button id=\"vaporSequenceStopButton\" onclick=\"stopVaporSequencePlayback()\">Stop</button>
+          <button id=\"vaporSequenceClearButton\" onclick=\"clearVaporSequence()\">Borrar</button>
+        </div>
+        <div id=\"vaporSequenceSteps\" class=\"mono\" style=\"margin-top:12px; white-space:pre-wrap; opacity:0.88;\">Sin pasos grabados.</div>
+      </div>
+      <div class=\"card\">
+        <h3>Reglas de disparo</h3>
+        <div id=\"vaporAutomationStatus\" style=\"opacity:0.88;\">Sin reglas configuradas.</div>
+        <div style=\"margin-top:12px;\">
+          <label>Sensor</label><br>
+          <select id=\"vaporRuleMetricSelect\" style=\"min-width:320px; max-width:100%;\"></select>
+        </div>
+        <div style=\"margin-top:10px;\">
+          <label>Nombre</label><br>
+          <input id=\"vaporRuleName\" placeholder=\"Ej. lluvia activa\" />
+        </div>
+        <div style=\"display:flex; gap:10px; flex-wrap:wrap; margin-top:10px;\">
+          <div>
+            <label>Mínimo</label><br>
+            <input id=\"vaporRuleMinValue\" type=\"number\" step=\"any\" placeholder=\"sin mínimo\" />
+          </div>
+          <div>
+            <label>Máximo</label><br>
+            <input id=\"vaporRuleMaxValue\" type=\"number\" step=\"any\" placeholder=\"sin máximo\" />
+          </div>
+          <div>
+            <label>Cambio mínimo</label><br>
+            <input id=\"vaporRuleMinDelta\" type=\"number\" step=\"any\" value=\"0\" />
+          </div>
+          <div>
+            <label>Cooldown s</label><br>
+            <input id=\"vaporRuleCooldown\" type=\"number\" step=\"1\" value=\"30\" />
+          </div>
+        </div>
+        <div class=\"timelapse-actions\" style=\"margin-top:12px;\">
+          <button onclick=\"addVaporAutomationRule()\">Nueva Regla</button>
+        </div>
+        <div id=\"vaporRulesList\" style=\"margin-top:12px;\"></div>
       </div>
     </div>
   </div>
@@ -3287,6 +3784,7 @@ def index():
     let vaporBusy = false;
     let fanState = null;
     let fanBusy = false;
+    let vaporSequenceState = null;
     let fxState = null;
     let windCalibration = {{ calibration: {{ offset_deg: 0.0, east_reference_deg: null, updated_at: null }} }};
 
@@ -3451,6 +3949,7 @@ def index():
         button.disabled = vaporBusy || !configured || !online;
         button.textContent = relayOn ? 'Apagar vapor' : 'Activar vapor';
       }}
+      renderVaporSequenceState(vaporSequenceState);
     }}
 
     async function loadVaporState() {{
@@ -3562,6 +4061,197 @@ def index():
         readyText: '',
         notConfiguredText: 'Control del ventilador pendiente de configuración.',
       }});
+      renderVaporSequenceState(vaporSequenceState);
+    }}
+
+    function formatSequenceSeconds(value) {{
+      const numeric = Number(value || 0);
+      return numeric.toFixed(1);
+    }}
+
+    function renderVaporSequenceState(data) {{
+      vaporSequenceState = data || vaporSequenceState || {{}};
+      const state = vaporSequenceState || {{}};
+      const statusEl = document.getElementById('vaporSequenceStatus');
+      const metaEl = document.getElementById('vaporSequenceMeta');
+      const initialEl = document.getElementById('vaporSequenceInitial');
+      const runtimeEl = document.getElementById('vaporSequenceRuntime');
+      const stepsEl = document.getElementById('vaporSequenceSteps');
+      const recordButton = document.getElementById('vaporSequenceRecordButton');
+      const playButton = document.getElementById('vaporSequencePlayButton');
+      const stopButton = document.getElementById('vaporSequenceStopButton');
+      const clearButton = document.getElementById('vaporSequenceClearButton');
+      const stepCount = Number(state.step_count || 0);
+      const duration = formatSequenceSeconds(state.duration_sec || 0);
+      const recording = !!state.recording;
+      const playing = !!state.playing;
+      const initial = state.initial || {{}};
+      const currentStepIndex = Number.isInteger(state.current_step_index) ? state.current_step_index : null;
+
+      if (statusEl) {{
+        if (recording) statusEl.textContent = 'Grabando secuencia. Usa los botones de vapor y ventilador.';
+        else if (playing) statusEl.textContent = 'Reproduciendo secuencia guardada.';
+        else if (stepCount > 0) statusEl.textContent = 'Secuencia lista para reproducir.';
+        else statusEl.textContent = 'Sin secuencia grabada.';
+      }}
+      if (metaEl) metaEl.textContent = `Pasos: ${{stepCount}} | Duración: ${{duration}} s`;
+      if (initialEl) {{
+        initialEl.textContent = `Inicio: vapor ${{initial.vapor ? 'ON' : 'OFF'}} | ventilador ${{initial.fan ? 'ON' : 'OFF'}}`;
+      }}
+      if (runtimeEl) {{
+        const rec = recording ? `grabando (${{formatSequenceSeconds(state.record_elapsed_sec)}} s)` : 'parada';
+        const play = playing ? `reproduciendo (${{formatSequenceSeconds(state.play_elapsed_sec)}} s)` : 'parada';
+        runtimeEl.textContent = `Grabación: ${{rec}} | Reproducción: ${{play}}`;
+      }}
+      if (stepsEl) {{
+        const steps = Array.isArray(state.steps) ? state.steps : [];
+        if (!steps.length) {{
+          stepsEl.textContent = 'Sin pasos grabados.';
+        }} else {{
+          stepsEl.innerHTML = steps.map((step, index) => {{
+            const when = (Number(step.at_ms || 0) / 1000).toFixed(2).padStart(6, ' ');
+            const actuator = step.actuator === 'fan' ? 'ventilador' : 'vapor';
+            const active = playing && currentStepIndex === index;
+            const style = active
+              ? 'display:block; padding:3px 6px; margin:2px 0; border-radius:6px; background:rgba(46,204,113,0.22); color:#0b5d1e; font-weight:700;'
+              : 'display:block; padding:3px 6px; margin:2px 0; border-radius:6px;';
+            return `<span style="${{style}}">${{String(index + 1).padStart(2, '0')}}. +${{when}} s -> ${{actuator}} ${{step.enabled ? 'ON' : 'OFF'}}</span>`;
+          }}).join('');
+        }}
+      }}
+      if (recordButton) recordButton.textContent = recording ? 'Parar grabación' : 'Grabar secuencia';
+      if (recordButton) recordButton.disabled = playing;
+      if (playButton) playButton.disabled = recording || playing || stepCount === 0;
+      if (stopButton) stopButton.disabled = !playing;
+      if (clearButton) clearButton.disabled = recording || playing || stepCount === 0;
+
+      const disableManual = playing;
+      const vaporButton = document.getElementById('vaporToggleButton');
+      const fanButton = document.getElementById('fanToggleButton');
+      if (vaporButton && vaporState) {{
+        vaporButton.disabled = disableManual || vaporBusy || !vaporState.configured || !vaporState.online;
+      }}
+      if (fanButton && fanState) {{
+        fanButton.disabled = disableManual || fanBusy || !fanState.configured || !fanState.online;
+      }}
+    }}
+
+    async function loadVaporSequenceState() {{
+      try {{
+        const res = await fetch('/api/vapor/sequence', {{ cache: 'no-store' }});
+        const data = await res.json();
+        renderVaporSequenceState(data);
+      }} catch (error) {{
+        renderVaporSequenceState({{ recording: false, playing: false, step_count: 0, duration_sec: 0, initial: {{ vapor: false, fan: false }}, steps: [] }});
+      }}
+    }}
+
+    async function toggleVaporSequenceRecording() {{
+      const state = vaporSequenceState || {{}};
+      const form = new FormData();
+      form.append('recording', state.recording ? 'false' : 'true');
+      const res = await fetch('/api/vapor/sequence/record', {{ method: 'POST', body: form }});
+      const data = await res.json();
+      renderVaporSequenceState(data);
+      await loadVaporState();
+      await loadFanState();
+    }}
+
+    async function playVaporSequence() {{
+      const res = await fetch('/api/vapor/sequence/play', {{ method: 'POST' }});
+      const data = await res.json();
+      renderVaporSequenceState(data);
+      await loadVaporState();
+      await loadFanState();
+    }}
+
+    async function stopVaporSequencePlayback() {{
+      const res = await fetch('/api/vapor/sequence/stop', {{ method: 'POST' }});
+      const data = await res.json();
+      renderVaporSequenceState(data);
+      await loadVaporState();
+      await loadFanState();
+    }}
+
+    async function clearVaporSequence() {{
+      const res = await fetch('/api/vapor/sequence/clear', {{ method: 'POST' }});
+      const data = await res.json();
+      renderVaporSequenceState(data);
+    }}
+
+    function renderVaporAutomationState(payload) {{
+      vaporAutomationState = payload || {{}};
+      const config = vaporAutomationState.config || {{}};
+      const metrics = vaporAutomationState.metrics || [];
+      const rules = config.rules || [];
+      const engine = vaporAutomationState.engine || {{}};
+      const sequence = vaporAutomationState.sequence || {{}};
+      const activeRuleIds = new Set((engine.active_rule_ids || []).map(String));
+
+      const metricSelect = document.getElementById('vaporRuleMetricSelect');
+      if (metricSelect) {{
+        const current = metricSelect.value;
+        metricSelect.innerHTML = metrics.map(item => `<option value="${{metricOptionValue(item)}}">${{item.label}} (${{item.value}} ${{item.unit || ''}})</option>`).join('');
+        if (current) metricSelect.value = current;
+      }}
+
+      const status = document.getElementById('vaporAutomationStatus');
+      if (status) {{
+        if (!sequence.step_count) {{
+          status.textContent = 'No hay secuencia grabada. Las reglas no podrán disparar nada hasta guardar una.';
+        }} else if (rules.length) {{
+          status.textContent = `Reglas: ${{rules.length}} | Motor: ${{engine.running ? 'activo' : 'parado'}} | Secuencia: ${{sequence.step_count}} pasos`;
+        }} else {{
+          status.textContent = 'Sin reglas configuradas.';
+        }}
+      }}
+
+      const list = document.getElementById('vaporRulesList');
+      if (list) {{
+        list.innerHTML = rules.length ? rules.map(rule => `
+          <div style="margin-bottom:12px; padding-bottom:12px; border-bottom:1px solid rgba(22,50,74,0.08);">
+            <strong><span class="dot ${{activeRuleIds.has(String(rule.id)) ? 'online' : 'offline'}}"></span>${{rule.name}}</strong><br>
+            Sensor: ${{rule.device_id}} / ${{rule.metric_id}}<br>
+            Rango: ${{rule.min_value ?? '--'}} a ${{rule.max_value ?? '--'}} | Cambio mínimo: ${{rule.min_delta}} | Cooldown: ${{rule.cooldown_sec}}s<br>
+            Estado: ${{activeRuleIds.has(String(rule.id)) ? 'En rango' : (rule.enabled ? 'En espera' : 'Parada')}}<br>
+            <button onclick="removeVaporAutomationRule('${{rule.id}}')">Borrar</button>
+          </div>
+        `).join('') : '<p>Sin reglas configuradas.</p>';
+      }}
+    }}
+
+    async function loadVaporAutomationState() {{
+      const res = await fetch('/api/vapor/automation');
+      const data = await res.json();
+      renderVaporAutomationState(data);
+    }}
+
+    async function addVaporAutomationRule() {{
+      const metric = readMetricSelection('vaporRuleMetricSelect');
+      if (!metric.device_id || !metric.metric_id) return;
+      const nextRules = [ ...(vaporAutomationState?.config?.rules || []) ];
+      nextRules.push({{
+        id: crypto.randomUUID ? crypto.randomUUID() : String(Date.now()),
+        name: document.getElementById('vaporRuleName')?.value || `${{metric.device_id}} / ${{metric.metric_id}}`,
+        device_id: metric.device_id,
+        metric_id: metric.metric_id,
+        min_value: document.getElementById('vaporRuleMinValue')?.value || null,
+        max_value: document.getElementById('vaporRuleMaxValue')?.value || null,
+        min_delta: document.getElementById('vaporRuleMinDelta')?.value || 0,
+        cooldown_sec: document.getElementById('vaporRuleCooldown')?.value || 30,
+        enabled: true,
+      }});
+      await fetch('/api/vapor/automation/rules', {{
+        method: 'POST',
+        headers: {{ 'Content-Type': 'application/json' }},
+        body: JSON.stringify({{ rules: nextRules }}),
+      }});
+      await loadVaporAutomationState();
+    }}
+
+    async function removeVaporAutomationRule(ruleId) {{
+      await fetch(`/api/vapor/automation/rules/${{ruleId}}`, {{ method: 'DELETE' }});
+      await loadVaporAutomationState();
     }}
 
     async function loadFanState() {{
@@ -4126,15 +4816,20 @@ async function renderForecast(data) {{
 
 
     let soundState = null;
+    let vaporAutomationState = null;
 
     function metricOptionValue(item) {{
       return `${{item.device_id}}|||${{item.metric_id}}`;
     }}
 
-    function readSelectedMetric() {{
-      const raw = document.getElementById('soundMetricSelect')?.value || '';
+    function readMetricSelection(selectId) {{
+      const raw = document.getElementById(selectId)?.value || '';
       const [device_id, metric_id] = raw.split('|||');
       return {{ device_id: device_id || '', metric_id: metric_id || '' }};
+    }}
+
+    function readSelectedMetric() {{
+      return readMetricSelection('soundMetricSelect');
     }}
 
     function renderSoundState(payload) {{
@@ -4783,11 +5478,15 @@ async function renderForecast(data) {{
     renderDashGps({{}});
     renderVaporState({{ configured: false, online: false, relay_on: false }});
     renderFanState({{ configured: false, online: false, relay_on: false }});
+    renderVaporSequenceState({{ recording: false, playing: false, step_count: 0, duration_sec: 0, initial: {{ vapor: false, fan: false }}, steps: [] }});
+    renderVaporAutomationState({{ config: {{ rules: [] }}, metrics: [], engine: {{ running: false, active_rule_ids: [] }}, sequence: {{ step_count: 0 }} }});
     renderFxState({{ config: {{ text_color_mode: 'auto' }}, presets: [] }});
     renderWindCalibrationState(null);
     loadLatest();
     loadVaporState();
     loadFanState();
+    loadVaporSequenceState();
+    loadVaporAutomationState();
     loadFxState();
     loadWindCalibration();
     const activePanel = document.querySelector('.panel.active');
@@ -4796,6 +5495,8 @@ async function renderForecast(data) {{
     }}
     setInterval(loadVaporState, 5000);
     setInterval(loadFanState, 5000);
+    setInterval(loadVaporSequenceState, 1000);
+    setInterval(loadVaporAutomationState, 5000);
     setInterval(loadFxState, 10000);
     setInterval(loadWindCalibration, 10000);
   </script>

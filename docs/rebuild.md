@@ -38,6 +38,7 @@
   - `/opt/rotor-meteo/data/hls`
   - `/opt/rotor-meteo/data/sounds`
   - `/opt/rotor-meteo/data/timelapse`
+  - `/opt/rotor-meteo/data`
 
 ## System Packages
 - Python `3.13.x`
@@ -133,6 +134,10 @@
   - `plughw:CARD=CD002,DEV=0`
 - Runtime sound config:
   - `/opt/rotor-meteo/data/sound_config.json`
+- Vapor sequence state:
+  - `/opt/rotor-meteo/data/vapor_sequence.json`
+- Vapor automation rules:
+  - `/opt/rotor-meteo/data/vapor_automation.json`
 - If USB audio is unreliable, the jack output is the safest fallback.
 
 ## Power Notes
@@ -171,12 +176,24 @@
   - `POST /api/vapor/set`
   - `GET /api/fan/state`
   - `POST /api/fan/set`
+  - `GET /api/vapor/sequence`
+  - `POST /api/vapor/sequence/record`
+  - `POST /api/vapor/sequence/play`
+  - `POST /api/vapor/sequence/stop`
+  - `POST /api/vapor/sequence/clear`
+  - `GET /api/vapor/automation`
+  - `POST /api/vapor/automation/rules`
+  - `DELETE /api/vapor/automation/rules/{id}`
 - The relay ESP is a separate module on Wi-Fi and should be configured only through:
   - `/etc/rotor-meteo/secrets.yaml`
 - Current logical pin map in the repo:
   - `vapor -> D6`
   - `fan -> D2`
 - Do not hardcode the live relay IP in git-driven config for a rebuild recipe.
+- Current operator workflow:
+  - record a relay sequence from the dashboard
+  - replay it manually from the same tab
+  - optionally bind sensor thresholds to replay that sequence automatically
 
 ## LED Signs
 - Shared endpoint for sign clients:
@@ -225,6 +242,8 @@
 ## Validation Checklist
 - `systemctl is-active rotor-web rotor-collector rotor-camera`
 - `curl http://127.0.0.1:8000/api/sound/state`
+ - `curl http://127.0.0.1:8000/api/vapor/sequence`
+ - `curl http://127.0.0.1:8000/api/vapor/automation`
 - `lsusb`
 - `aplay -l`
 - `vcgencmd get_throttled`

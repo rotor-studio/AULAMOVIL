@@ -26,6 +26,10 @@
   - `/opt/rotor-meteo/data/sounds`
 - Timelapse output:
   - `/opt/rotor-meteo/data/timelapse`
+- Vapor sequence persistence:
+  - `/opt/rotor-meteo/data/vapor_sequence.json`
+- Vapor automation rules:
+  - `/opt/rotor-meteo/data/vapor_automation.json`
 
 ## MOVILCLOUD App In Repo
 - Branch `movilcloud-site` also contains a PHP receiver app in `/movilcloud`
@@ -147,6 +151,16 @@
   - `POST /api/vapor/set`
   - `GET /api/fan/state`
   - `POST /api/fan/set`
+- Vapor sequence endpoints:
+  - `GET /api/vapor/sequence`
+  - `POST /api/vapor/sequence/record`
+  - `POST /api/vapor/sequence/play`
+  - `POST /api/vapor/sequence/stop`
+  - `POST /api/vapor/sequence/clear`
+- Vapor automation endpoints:
+  - `GET /api/vapor/automation`
+  - `POST /api/vapor/automation/rules`
+  - `DELETE /api/vapor/automation/rules/{id}`
 - Relay module behavior:
   - same ESP8266 serves both `vapor` and `fan`
   - current logical pin map in the repo:
@@ -156,6 +170,19 @@
   - the relay ESP may change DHCP address unless the router reserves it
   - when that happens, update `vapor.base_url` and `fan.base_url` in `/etc/rotor-meteo/secrets.yaml`
 - do not hardcode the live relay IP in git notes; it is DHCP unless reserved in the router
+- Current UI behavior in `Vaporizadores`:
+  - manual independent toggle for `vapor`
+  - manual independent toggle for `fan`
+  - record a timed sequence by pressing `Grabar secuencia` and then using the manual toggles
+  - replay the saved sequence with `Play`
+  - stop playback with `Stop`
+  - clear saved steps with `Borrar`
+  - a separate rule card can trigger sequence playback from sensor thresholds
+- Current sequence behavior:
+  - recording stores the initial state of both relays plus timed steps
+  - playback is blocked while recording
+  - automation rules do not fire while recording or while another playback is running
+  - sequence list highlights the current step while replaying
 
 ## Current Sensor State
 - Working on `NUBEMOVIL` at last validation:
@@ -337,10 +364,12 @@
   - sensor-driven rules
   - rule activity indicators
   - output selection buttons for `USB` and `Jack`
+  - volume slider for the active output
 - Current sound API endpoints:
   - `GET /api/sound/state`
   - `POST /api/sound/global`
   - `POST /api/sound/output`
+  - `POST /api/sound/volume`
   - `POST /api/sound/stop`
   - `POST /api/sound/test/chirp`
   - `POST /api/sound/test/file`
@@ -380,6 +409,8 @@
 ## Validation Checklist After Deploy
 - `systemctl is-active rotor-web rotor-collector rotor-camera`
 - `curl http://127.0.0.1:8000/api/sound/state`
+- `curl http://127.0.0.1:8000/api/vapor/sequence`
+- `curl http://127.0.0.1:8000/api/vapor/automation`
 - `aplay -l`
 - `lsusb`
 - `vcgencmd get_throttled`
