@@ -558,6 +558,25 @@ NON_VARIANT_CATEGORIES = {
 }
 
 
+STATE_VARIANT_FALLBACKS = {
+    "aire_limpio": [
+        "El aire va limpio y ligero.",
+        "Respirar hoy no cuesta.",
+        "Ambiente limpio, sin carga.",
+    ],
+    "presion_estable": [
+        "La presión se mantiene firme.",
+        "Tiempo sereno, sin sobresaltos.",
+        "La atmósfera sigue en pausa.",
+    ],
+    "mensaje_general": [
+        "El tiempo va por su sitio.",
+        "La estación lee el aire sin prisa.",
+        "Se mantiene un pulso tranquilo.",
+    ],
+}
+
+
 def choose_candidate(rows, seed_text, avoid_phrases=None):
     if not rows:
         return None
@@ -575,23 +594,43 @@ def choose_candidate(rows, seed_text, avoid_phrases=None):
 
 def choose_message(rows, condition, seed_text, avoid_phrases=None):
     candidates = [row for row in rows if row["condition"] == condition]
-    if candidates and len(candidates) == 1:
-        category = (candidates[0].get("category") or "").strip()
-        if category and category not in NON_VARIANT_CATEGORIES:
-            category_candidates = [
-                row
-                for row in rows
-                if (row.get("category") or "").strip() == category and row["condition"] != condition
-            ]
-            if category_candidates:
-                chosen = choose_candidate(category_candidates, f"{seed_text}:category:{category}", avoid_phrases)
-                if chosen is not None:
-                    return chosen
     if candidates:
-        return choose_candidate(candidates, seed_text, avoid_phrases)
+        chosen = choose_candidate(candidates, seed_text, avoid_phrases)
+        if chosen is not None:
+            chosen_phrase = str(chosen.get("phrase") or "").strip()
+            if chosen_phrase and chosen_phrase in {str(item).strip() for item in (avoid_phrases or [])}:
+                fallback_phrases = STATE_VARIANT_FALLBACKS.get(condition, [])
+                if fallback_phrases:
+                    digest = hashlib.sha1(seed_text.encode("utf-8")).hexdigest()
+                    return {
+                        "category": "Sistema",
+                        "sensor_parameters": "",
+                        "condition": condition,
+                        "phrase": fallback_phrases[int(digest[:8], 16) % len(fallback_phrases)],
+                        "type": "variant",
+                        "source": "",
+                        "source_url": "",
+                        "notes": "variante local para evitar repetición",
+                        "priority": chosen.get("priority", 1),
+                    }
+            return chosen
 
     candidates = [row for row in rows if row["condition"] in ("mensaje_general", "uso_general_refranero")]
     if not candidates:
+        fallback_phrases = STATE_VARIANT_FALLBACKS.get(condition, [])
+        if fallback_phrases:
+            digest = hashlib.sha1(seed_text.encode("utf-8")).hexdigest()
+            return {
+                "category": "Sistema",
+                "sensor_parameters": "",
+                "condition": condition,
+                "phrase": fallback_phrases[int(digest[:8], 16) % len(fallback_phrases)],
+                "type": "variant",
+                "source": "",
+                "source_url": "",
+                "notes": "variante local para evitar repetición",
+                "priority": 1,
+            }
         return None
     return choose_candidate(candidates, seed_text, avoid_phrases)
 
