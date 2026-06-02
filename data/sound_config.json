@@ -80,14 +80,14 @@
       "enabled": true
     },
     {
-      "id": "rule_1780423971171",
+      "id": "rule_1780424480402",
       "name": "Regla sonido",
       "device_id": "sensor_community_1",
       "metric_id": "pm10_ugm3",
       "sound_file": "Cigarras.mp3",
       "mode": "once",
-      "min_value": "13",
-      "max_value": "50",
+      "min_value": "30",
+      "max_value": "60",
       "min_delta": 1.0,
       "cooldown_sec": 10.0,
       "enabled": true
