@@ -1094,6 +1094,9 @@ FX_COLOR_PRESETS = {
 }
 
 FX_EFFECT_PRESETS = {
+    "auto": {
+        "label": "Auto",
+    },
     "none": {
         "label": "Sin efecto",
     },
@@ -1112,7 +1115,7 @@ FX_EFFECT_PRESETS = {
 def default_fx_config():
     return {
         "text_color_mode": "auto",
-        "effect_mode": "none",
+        "effect_mode": "auto",
     }
 
 
@@ -1129,7 +1132,7 @@ def load_fx_config():
             mode = "auto"
         effect_mode = str(data.get("effect_mode") or "none").lower()
         if effect_mode not in FX_EFFECT_PRESETS:
-            effect_mode = "none"
+            effect_mode = "auto"
         return {
             "text_color_mode": mode,
             "effect_mode": effect_mode,
@@ -1142,6 +1145,142 @@ def save_fx_config(config):
     os.makedirs(os.path.dirname(FX_CONFIG_PATH), exist_ok=True)
     with open(FX_CONFIG_PATH, "w", encoding="utf-8") as f:
         json.dump(config, f, ensure_ascii=False, indent=2)
+
+
+def get_latest_interpretation_history():
+    rows = get_recent_interpretation_history(limit=1, seconds=72 * 3600)
+    return rows[0] if rows else None
+
+
+def derive_fx_hint(interp=None):
+    interp = interp or {}
+    state = interp.get("state") or {}
+    forecast = interp.get("forecast") or {}
+    air = interp.get("air") or {}
+    state_id = str(state.get("id") or "").strip()
+    forecast_label = str(forecast.get("label") or "").strip().lower()
+    air_band = str(air.get("band") or "").strip()
+
+    rain_states = {
+        "lluvia_fuerte",
+        "dia_lluvioso",
+        "lluvia_continua",
+        "lluvia_suave",
+        "llovizna_fina",
+        "lluvia_y_frio",
+        "lluvia_beneficiosa",
+        "lluvia_suave_y_humedad_alta",
+        "sol_despues_de_lluvia",
+    }
+    air_states = {
+        "aire_limpio",
+        "aire_regular_o_pm_alta",
+        "aire_malo",
+        "pm_alta_y_poco_viento",
+        "pm_alta_y_trafico",
+        "pm10_alta_o_polvo",
+        "pm25_alta",
+        "humo_o_combustion",
+        "particulas_subiendo",
+        "particulas_bajando",
+    }
+    storm_states = {
+        "presion_bajando_rapido",
+        "nubosidad_creciente",
+        "inestabilidad_probable",
+        "presion_baja_y_humedad_alta",
+        "nubes_densas_y_presion_baja",
+    }
+    calm_states = {
+        "presion_estable",
+        "aire_limpio",
+        "estable",
+        "mejora",
+        "dia_luminoso",
+        "sol_suave",
+        "sol_fuerte_o_calor",
+        "alta_presion_y_sol",
+    }
+    moist_states = {
+        "humedad_alta",
+        "humedad_muy_alta_sin_lluvia",
+        "niebla_y_humedad_alta",
+        "niebla_densa_o_dia_gris",
+        "cielo_gris_estable",
+        "rocio",
+        "condensacion",
+    }
+
+    if state_id in rain_states or "lluvia" in forecast_label:
+        return {
+            "color_mode": "blue",
+            "effect_mode": "rain",
+            "reason": "lluvia o precipitación detectada",
+        }
+    if state_id in storm_states or "inestabilidad" in forecast_label:
+        return {
+            "color_mode": "orange",
+            "effect_mode": "lightning",
+            "reason": "presión cayendo o inestabilidad clara",
+        }
+    if state_id in air_states:
+        if state_id == "aire_limpio":
+            return {
+                "color_mode": "green",
+                "effect_mode": "none",
+                "reason": "aire limpio interpretado por la estación",
+            }
+        if air_band == "muy_mala" or state_id in {"aire_malo", "humo_o_combustion", "pm_alta_y_poco_viento", "pm25_alta", "pm10_alta_o_polvo"}:
+            return {
+                "color_mode": "red",
+                "effect_mode": "dust",
+                "reason": "aire cargado o partículas altas",
+            }
+        if air_band == "mala":
+            return {
+                "color_mode": "orange",
+                "effect_mode": "dust",
+                "reason": "aire cargado",
+            }
+        return {
+            "color_mode": "yellow",
+            "effect_mode": "dust",
+            "reason": "calidad de aire regular",
+        }
+    if state_id in moist_states or "niebla" in forecast_label:
+        return {
+            "color_mode": "white",
+            "effect_mode": "none",
+            "reason": "humedad alta, niebla o cielo cerrado",
+        }
+    if state_id in calm_states:
+        return {
+            "color_mode": "green",
+            "effect_mode": "none",
+            "reason": "situación estable o de mejora",
+        }
+
+    return {
+        "color_mode": "blue",
+        "effect_mode": "none",
+        "reason": "sin señal dominante para FX",
+    }
+
+
+def resolve_fx_display(fx_config, fx_hint):
+    fx_config = fx_config or default_fx_config()
+    fx_hint = fx_hint or {}
+    text_color_mode = fx_config.get("text_color_mode", "auto")
+    effect_mode = fx_config.get("effect_mode", "auto")
+    color_mode = text_color_mode if text_color_mode != "auto" else fx_hint.get("color_mode", "auto")
+    applied_effect = effect_mode if effect_mode != "auto" else fx_hint.get("effect_mode", "none")
+    return {
+        "text_color_mode": text_color_mode,
+        "effect_mode": effect_mode,
+        "color_mode": color_mode,
+        "effect": applied_effect,
+        "reason": fx_hint.get("reason", ""),
+    }
 
 
 def list_sound_files():
@@ -1594,6 +1733,17 @@ def compute_forecast_payload():
             air_label = "Aire limpio"
             air_color = {"name": "green", "hex": "#2ECC71", "rgb": [46, 204, 113]}
 
+    fx_hint = derive_fx_hint({
+        "state": local_interpretation.get("state", {}),
+        "forecast": {
+            "label": label,
+        },
+        "air": {
+            "band": air_band,
+        },
+    })
+    fx_display = resolve_fx_display(fx_config, fx_hint)
+
     headline = label
     line1 = summary
     line2 = air_label
@@ -1624,12 +1774,11 @@ def compute_forecast_payload():
         "line1": text_for_sign(line1),
         "line2": text_for_sign(line2),
         "brightness": 64,
-        "effect": fx_config.get("effect_mode", "none"),
+        "effect": fx_display["effect"],
     }
 
-    text_color_mode = fx_config.get("text_color_mode", "auto")
-    if text_color_mode in FX_COLOR_PRESETS and FX_COLOR_PRESETS[text_color_mode]:
-        display_block["color"] = FX_COLOR_PRESETS[text_color_mode]
+    if fx_display["color_mode"] in FX_COLOR_PRESETS and FX_COLOR_PRESETS[fx_display["color_mode"]]:
+        display_block["color"] = FX_COLOR_PRESETS[fx_display["color_mode"]]
 
     return {
         "ts": time.time(),
@@ -1650,6 +1799,11 @@ def compute_forecast_payload():
             "color": air_color,
         },
         "interpretation": local_interpretation,
+        "fx": {
+            "config": fx_config,
+            "hint": fx_hint,
+            "applied": fx_display,
+        },
         "display": display_block,
         "metrics": {
             "temp_c": float(temperature["value"]) if temperature else None,
@@ -1771,9 +1925,26 @@ def api_interpretation_local_24h():
 @app.get("/api/fx/state")
 def api_fx_state():
     config = load_fx_config()
+    latest_interp = get_latest_interpretation_history()
+    fx_hint = derive_fx_hint({
+        "state": {
+            "id": latest_interp.get("state_id") if latest_interp else None,
+            "confidence": latest_interp.get("confidence") if latest_interp else None,
+        },
+        "forecast": {
+            "label": latest_interp.get("label") if latest_interp else "",
+        },
+        "air": {},
+    })
     return {
         "ok": True,
         "config": config,
+        "suggested": {
+            "label": latest_interp.get("label") if latest_interp else None,
+            "state_id": latest_interp.get("state_id") if latest_interp else None,
+            "phrase": latest_interp.get("phrase") if latest_interp else None,
+            "hint": fx_hint,
+        },
         "presets": [
             {"id": key, "rgb": value}
             for key, value in FX_COLOR_PRESETS.items()
@@ -2418,12 +2589,14 @@ def index():
       </div>
       <div id=\"fxColorPreview\" style=\"margin-top:14px; width:72px; height:18px; border-radius:999px; border:1px solid #999; background:#ddd;\"></div>
       <div id=\"fxStatusDetail\" style=\"margin-top:12px; opacity:0.85;\">Esperando estado.</div>
+      <div id=\"fxSuggestedText\" style=\"margin-top:8px; opacity:0.8;\"></div>
     </div>
     <div class=\"card\">
       <h3>Efecto del cartel</h3>
       <p>Selecciona un efecto simple para superponer sobre el texto del cartel.</p>
       <div class=\"status-line\">Efecto actual: <strong id=\"fxEffectModeLabel\">none</strong></div>
       <div class=\"timelapse-actions\" style=\"margin-top:12px; flex-wrap:wrap;\">
+        <button onclick=\"setFxEffect('auto')\">Auto (interpretación)</button>
         <button onclick=\"setFxEffect('none')\">Ninguno</button>
         <button onclick=\"setFxEffect('rain')\">Lluvia</button>
         <button onclick=\"setFxEffect('dust')\">Polvo</button>
@@ -2861,6 +3034,8 @@ def index():
       const config = fxState.config || {{}};
       const mode = config.text_color_mode || 'auto';
       const effectMode = config.effect_mode || 'none';
+      const suggested = fxState.suggested || {{}};
+      const hint = suggested.hint || {{}};
       const label = document.getElementById('fxColorModeLabel');
       const detail = document.getElementById('fxStatusDetail');
       const preview = document.getElementById('fxColorPreview');
@@ -2870,11 +3045,13 @@ def index():
       if (effectLabel) effectLabel.textContent = effectMode;
       if (detail) {{
         detail.textContent = mode === 'auto'
-          ? 'El cartel usa el color calculado por PM.'
+          ? 'El cartel usa el color sugerido por la interpretación local.'
           : `La Pi está forzando el color ${{mode}} en /api/sign/latest.`;
       }}
       if (effectDetail) {{
-        if (effectMode === 'none') {{
+        if (effectMode === 'auto') {{
+          effectDetail.textContent = `La interpretación sugiere ${{hint.effect_mode || 'none'}} porque ${{hint.reason || 'no hay señal dominante'}}.`;
+        }} else if (effectMode === 'none') {{
           effectDetail.textContent = 'Sin efecto adicional. Solo texto.';
         }} else if (effectMode === 'rain') {{
           effectDetail.textContent = 'Gotas azules cayendo sobre el cartel.';
@@ -2883,6 +3060,10 @@ def index():
         }} else {{
           effectDetail.textContent = 'Flash blanco parcial tipo rayo.';
         }}
+      }}
+      if (suggested && suggested.phrase) {{
+        const extra = document.getElementById('fxSuggestedText') || null;
+        if (extra) extra.textContent = `Interpretación actual: ${{suggested.state_id || '--'}} · Frase: ${{suggested.phrase}}`;
       }}
       if (preview) {{
         const preset = (fxState.presets || []).find(item => item.id === mode);
