@@ -23,6 +23,7 @@ DEFAULT_METRICS = [
     {"source": "light_mcu/light_lux", "label": "Luminosidad", "decimals": 0, "unit": "lux"},
     {"source": "light_mcu/uv_voltage_v", "label": "Radiacion UV", "decimals": 2, "unit": "V"},
     {"source": "rain_node_mcu/rain_mm_total", "label": "Lluvia", "decimals": 1, "unit": "mm"},
+    {"source": "sensor_community_1/pressure_hpa", "label": "Presion", "decimals": 1, "unit": "hPa"},
     {"source": "sensor_community_1/temp_c", "label": "Temp", "decimals": 1, "unit": "C"},
     {"source": "sensor_community_1/rh_pct", "label": "Humedad", "decimals": 0, "unit": "%"},
     {"source": "bme280_ground/temp_ground_c", "label": "Temp suelo", "decimals": 1, "unit": "C"},
