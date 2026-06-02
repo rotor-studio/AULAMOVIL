@@ -3,10 +3,10 @@ __pycache__/
 *.pyc
 *.db
 /data/*
-/data/messages/
-/data/messages/**
-/data/sounds/
-/data/sounds/**
+!/data/messages/
+!/data/messages/**
+!/data/sounds/
+!/data/sounds/**
 !/data/fx_config.json
 !/data/rain_window_config.json
 !/data/sound_config.json
