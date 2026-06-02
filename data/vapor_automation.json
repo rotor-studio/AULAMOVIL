@@ -1,0 +1,15 @@
+{
+  "rules": [
+    {
+      "id": "1780422636794",
+      "name": "Direccion",
+      "device_id": "bme280_ground",
+      "metric_id": "pressure_ground_hpa",
+      "min_value": "1000",
+      "max_value": "1010",
+      "min_delta": 1.0,
+      "cooldown_sec": 30.0,
+      "enabled": true
+    }
+  ]
+}

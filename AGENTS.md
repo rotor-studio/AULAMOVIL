@@ -30,6 +30,19 @@
   - `/opt/rotor-meteo/data/vapor_sequence.json`
 - Vapor automation rules:
   - `/opt/rotor-meteo/data/vapor_automation.json`
+- Runtime assets currently intended to travel in git for redeploy:
+  - `/opt/rotor-meteo/data/messages/refranes_meteorologicos_asturias.csv`
+  - `/opt/rotor-meteo/data/sounds/*`
+  - `/opt/rotor-meteo/data/fx_config.json`
+  - `/opt/rotor-meteo/data/sound_config.json`
+  - `/opt/rotor-meteo/data/rain_window_config.json`
+  - `/opt/rotor-meteo/data/wind_calibration.json`
+  - `/opt/rotor-meteo/data/vapor_sequence.json`
+  - `/opt/rotor-meteo/data/vapor_automation.json`
+- Runtime artifacts still intentionally left out of git:
+  - `/opt/rotor-meteo/data/rotor.db*`
+  - `/opt/rotor-meteo/data/meteo.db`
+  - `/opt/rotor-meteo/data/hls/*`
 
 ## MOVILCLOUD App In Repo
 - Branch `movilcloud-site` also contains a PHP receiver app in `/movilcloud`

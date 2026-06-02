@@ -2,5 +2,15 @@
 __pycache__/
 *.pyc
 *.db
-/data/
+/data/*
+/data/messages/
+/data/messages/**
+/data/sounds/
+/data/sounds/**
+!/data/fx_config.json
+!/data/rain_window_config.json
+!/data/sound_config.json
+!/data/vapor_automation.json
+!/data/vapor_sequence.json
+!/data/wind_calibration.json
 esp8266/**/local_config.h

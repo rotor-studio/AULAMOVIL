@@ -1,0 +1,83 @@
+{
+  "version": 1,
+  "initial": {
+    "vapor": false,
+    "fan": false
+  },
+  "steps": [
+    {
+      "actuator": "vapor",
+      "enabled": true,
+      "at_ms": 2037
+    },
+    {
+      "actuator": "fan",
+      "enabled": true,
+      "at_ms": 8869
+    },
+    {
+      "actuator": "fan",
+      "enabled": false,
+      "at_ms": 12623
+    },
+    {
+      "actuator": "fan",
+      "enabled": true,
+      "at_ms": 19106
+    },
+    {
+      "actuator": "fan",
+      "enabled": false,
+      "at_ms": 21556
+    },
+    {
+      "actuator": "fan",
+      "enabled": true,
+      "at_ms": 22762
+    },
+    {
+      "actuator": "fan",
+      "enabled": false,
+      "at_ms": 26926
+    },
+    {
+      "actuator": "vapor",
+      "enabled": false,
+      "at_ms": 38153
+    },
+    {
+      "actuator": "fan",
+      "enabled": true,
+      "at_ms": 39224
+    },
+    {
+      "actuator": "fan",
+      "enabled": false,
+      "at_ms": 43270
+    },
+    {
+      "actuator": "vapor",
+      "enabled": true,
+      "at_ms": 44909
+    },
+    {
+      "actuator": "vapor",
+      "enabled": false,
+      "at_ms": 51604
+    },
+    {
+      "actuator": "fan",
+      "enabled": true,
+      "at_ms": 52487
+    },
+    {
+      "actuator": "fan",
+      "enabled": false,
+      "at_ms": 57212
+    }
+  ],
+  "duration_sec": 57.212,
+  "created_at": "2026-06-02T17:27:45.686465+00:00",
+  "updated_at": "2026-06-02T17:28:42.901081+00:00",
+  "last_played_at": "2026-06-02T18:00:28.274812+00:00"
+}
