@@ -1,0 +1,97 @@
+{
+  "enabled": true,
+  "rules": [
+    {
+      "id": "rule_1773927619007",
+      "name": "Regla sonido",
+      "device_id": "wind_esp8266",
+      "metric_id": "wind_speed_ms",
+      "sound_file": "d951315de98047a9b20c09a456a9c820.mp3",
+      "mode": "once",
+      "min_value": "5",
+      "max_value": "20",
+      "min_delta": 3.0,
+      "cooldown_sec": 3.0,
+      "enabled": true
+    },
+    {
+      "id": "rule_1780399209236",
+      "name": "Regla sonido",
+      "device_id": "light_mcu",
+      "metric_id": "light_lux",
+      "sound_file": "183abf3af6a64817a69c56b3069e8e22.wav",
+      "mode": "loop",
+      "min_value": "0",
+      "max_value": "50",
+      "min_delta": 1.0,
+      "cooldown_sec": 10.0,
+      "enabled": true
+    },
+    {
+      "id": "rule_1780419329017",
+      "name": "Regla sonido",
+      "device_id": "rain_node_mcu",
+      "metric_id": "rain_mm_total",
+      "sound_file": "ranas.mp3",
+      "mode": "loop",
+      "min_value": "10",
+      "max_value": "400",
+      "min_delta": 1.0,
+      "cooldown_sec": 10.0,
+      "enabled": true
+    },
+    {
+      "id": "rule_1780419810081",
+      "name": "Regla sonido",
+      "device_id": "sensor_community_1",
+      "metric_id": "pressure_hpa",
+      "sound_file": "ranasRaras.wav",
+      "mode": "loop",
+      "min_value": "990",
+      "max_value": "1000",
+      "min_delta": 1.0,
+      "cooldown_sec": 10.0,
+      "enabled": true
+    },
+    {
+      "id": "rule_1780422813514",
+      "name": "Regla sonido",
+      "device_id": "sensor_community_1",
+      "metric_id": "temp_c",
+      "sound_file": "pajaro_australiano.wav",
+      "mode": "loop",
+      "min_value": "24",
+      "max_value": "30",
+      "min_delta": 1.0,
+      "cooldown_sec": 10.0,
+      "enabled": true
+    },
+    {
+      "id": "rule_1780423146458",
+      "name": "Regla sonido",
+      "device_id": "bme280_ground",
+      "metric_id": "rh_ground_pct",
+      "sound_file": "708532__michijung__dark-ambient-synth-drone.wav",
+      "mode": "loop",
+      "min_value": "60",
+      "max_value": "64",
+      "min_delta": 1.0,
+      "cooldown_sec": 10.0,
+      "enabled": true
+    },
+    {
+      "id": "rule_1780423971171",
+      "name": "Regla sonido",
+      "device_id": "sensor_community_1",
+      "metric_id": "pm10_ugm3",
+      "sound_file": "Cigarras.mp3",
+      "mode": "once",
+      "min_value": "13",
+      "max_value": "50",
+      "min_delta": 1.0,
+      "cooldown_sec": 10.0,
+      "enabled": true
+    }
+  ],
+  "output_device": "plughw:CARD=CD002,DEV=0"
+}
