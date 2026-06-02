@@ -144,3 +144,24 @@ Dashboard: http://<pi-ip>:8000/
 cd /opt/rotor-meteo
 ./scripts/install.sh
 `
+
+## What install.sh does now
+- creates `.venv`
+- installs `requirements.txt`
+- creates runtime directories under `data/`
+- copies versioned deployable runtime assets into live `data/` only if missing:
+  - `messages/`
+  - `sounds/`
+  - `fx_config.json`
+  - `sound_config.json`
+  - `rain_window_config.json`
+  - `wind_calibration.json`
+  - `vapor_sequence.json`
+  - `vapor_automation.json`
+- installs and restarts the systemd units present in `scripts/systemd`
+
+It does not overwrite:
+- `data/rotor.db*`
+- `data/meteo.db`
+- `data/hls/*`
+- existing files in `data/messages/` and `data/sounds/` with the same name

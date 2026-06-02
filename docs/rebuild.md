@@ -125,7 +125,12 @@
 7. Create `data/hls`, `data/sounds`, `data/timelapse` if missing.
 8. Install the systemd units.
 9. Enable `rotor-web`, `rotor-collector` and `rotor-camera`.
-10. Validate local web, HLS and database writes before enabling `rotor-cloud-bridge`.
+10. Run `./scripts/install.sh` to:
+  - create the venv
+  - install Python requirements
+  - install systemd units
+  - bootstrap versioned runtime assets into `data/` if missing
+11. Validate local web, HLS and database writes before enabling `rotor-cloud-bridge`.
 
 ## Audio Notes
 - Analog jack output:
@@ -139,6 +144,11 @@
 - Vapor automation rules:
   - `/opt/rotor-meteo/data/vapor_automation.json`
 - If USB audio is unreliable, the jack output is the safest fallback.
+- `scripts/install.sh` copies these versioned runtime assets into live `data/` only when they do not already exist.
+- It intentionally does not overwrite:
+  - `data/rotor.db*`
+  - `data/meteo.db`
+  - `data/hls/*`
 
 ## Power Notes
 - If the Pi behaves erratically, check:

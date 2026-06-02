@@ -302,6 +302,16 @@
    - `data/timelapse`
 9. `systemctl daemon-reload`
 10. `systemctl enable --now rotor-web rotor-collector rotor-camera`
+11. `./scripts/install.sh` now bootstrap-copies versioned runtime assets into live `data/` if they are missing:
+   - `data/messages/*`
+   - `data/sounds/*`
+   - `fx_config.json`
+   - `sound_config.json`
+   - `rain_window_config.json`
+   - `wind_calibration.json`
+   - `vapor_sequence.json`
+   - `vapor_automation.json`
+12. The installer does not overwrite existing DB files, HLS output, or existing runtime assets with the same name.
 
 ## MOVILCLOUD Bridge
 - Purpose:
