@@ -42,6 +42,17 @@ def parse_timestamp(value):
     return time.time()
 
 
+def normalize_degrees(value):
+    try:
+        deg = float(value)
+    except Exception:
+        return value
+    deg = deg % 360.0
+    if deg < 0:
+        deg += 360.0
+    return deg
+
+
 def init_db(conn):
     conn.execute("PRAGMA journal_mode=WAL;")
     conn.execute("PRAGMA busy_timeout=10000;")
@@ -207,6 +218,8 @@ class Collector:
                         value = float(payload[k])
                     except Exception:
                         continue
+                    if metric_id == "wind_direction_deg":
+                        value = normalize_degrees(value)
                     self.store(ts, device_id, metric_id, value, unit, raw_json)
             dir_card = payload.get("direction_cardinal", payload.get("dir_card"))
             if dir_card is not None:
@@ -234,6 +247,8 @@ class Collector:
                 value = float(payload)
             except Exception:
                 return
+            if metric_id == "wind_direction_deg":
+                value = normalize_degrees(value)
             ts = time.time()
             self.store(ts, device_id, metric_id, value, None, json.dumps({"value": value}))
             return
