@@ -9,8 +9,8 @@
 #define PSTR
 #endif
 
-const char* WIFI_SSID = "CHANGE_WIFI_SSID";
-const char* WIFI_PASSWORD = "CHANGE_WIFI_PASSWORD";
+const char* WIFI_SSID = "NUBEMOVIL";
+const char* WIFI_PASSWORD = "100*Nubemovil001";
 const char* API_URL = "http://192.168.1.109:8000/api/sign/latest";
 
 const unsigned long WIFI_TIMEOUT_MS = 15000;
@@ -330,6 +330,12 @@ void updateDisplayText() {
   newDataReceived = true;
 }
 
+bool samePayloadText(const SignPayload& a, const SignPayload& b) {
+  return strcmp(a.headline, b.headline) == 0
+    && strcmp(a.line1, b.line1) == 0
+    && strcmp(a.line2, b.line2) == 0;
+}
+
 int16_t textWidthPx(const String& text) {
   return text.length() * CHAR_ADVANCE_PX;
 }
@@ -460,10 +466,15 @@ void loop() {
     lastPollMs = millis();
     SignPayload nextPayload = currentPayload;
     if (fetchPayload(nextPayload)) {
+      bool textChanged = !samePayloadText(currentPayload, nextPayload);
       currentPayload = nextPayload;
       matrix.setBrightness(currentPayload.brightness);
-      updateDisplayText();
+      if (textChanged || !displayText.length()) {
+        updateDisplayText();
+      }
       Serial.println("[ok] payload actualizado");
+      Serial.print("[ok] textChanged=");
+      Serial.println(textChanged ? "yes" : "no");
     }
   }
 

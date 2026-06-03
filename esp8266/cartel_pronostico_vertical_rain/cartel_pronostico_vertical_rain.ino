@@ -1,4 +1,4 @@
-#include <Adafruit_GFX.h>
+ #include <Adafruit_GFX.h>
 #include <Adafruit_NeoMatrix.h>
 #include <Adafruit_NeoPixel.h>
 #include <ArduinoJson.h>
@@ -9,8 +9,8 @@
 #define PSTR
 #endif
 
-const char* WIFI_SSID = "CHANGE_WIFI_SSID";
-const char* WIFI_PASSWORD = "CHANGE_WIFI_PASSWORD";
+const char* WIFI_SSID = "NUBEMOVIL";
+const char* WIFI_PASSWORD = "100*Nubemovil001";
 const char* API_URL = "http://192.168.1.109:8000/api/sign/latest";
 
 const unsigned long WIFI_TIMEOUT_MS = 15000;
@@ -396,6 +396,12 @@ void updateDisplayText() {
   newDataReceived = true;
 }
 
+bool samePayloadText(const SignPayload& a, const SignPayload& b) {
+  return strcmp(a.headline, b.headline) == 0
+    && strcmp(a.line1, b.line1) == 0
+    && strcmp(a.line2, b.line2) == 0;
+}
+
 int16_t verticalTextHeight() {
   return displayText.length() * CHAR_HEIGHT;
 }
@@ -633,11 +639,16 @@ void loop() {
     lastPollMs = millis();
     SignPayload nextPayload = currentPayload;
     if (fetchPayload(nextPayload)) {
+      bool textChanged = !samePayloadText(currentPayload, nextPayload);
       currentPayload = nextPayload;
       matrix.setBrightness(currentPayload.brightness);
       currentTextColor = payloadColor(currentPayload);
-      updateDisplayText();
+      if (textChanged || !displayText.length()) {
+        updateDisplayText();
+      }
       Serial.println("[ok] payload actualizado");
+      Serial.print("[ok] textChanged=");
+      Serial.println(textChanged ? "yes" : "no");
     }
   }
 
