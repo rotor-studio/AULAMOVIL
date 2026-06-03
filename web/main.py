@@ -602,7 +602,7 @@ def get_recent_interpretation_history(limit=INTERPRETATION_HISTORY_LIMIT, second
     rows = conn.execute(
         """
         SELECT ts, source_ts, state_id, state_score, confidence, label, summary, detail,
-               phrase, message_condition, message_category, message_priority
+               phrase, message_condition, message_category, message_priority, ranked_json
         FROM interpretation_history
         WHERE ts >= ?
         ORDER BY ts DESC
@@ -823,10 +823,78 @@ def build_message_seed(state_id, state_score, confidence, ranked, source_ts):
     return f"{base}:{int(source_ts // 180)}"
 
 
+def build_rank_signature(ranked, limit=3):
+    return "|".join(
+        f"{condition}:{round(score, 1)}"
+        for condition, score in ranked[:limit]
+    )
+
+
+def parse_rank_signature(raw_ranked_json):
+    if not raw_ranked_json:
+        return ""
+    try:
+        ranked = json.loads(raw_ranked_json)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return ""
+    cleaned = []
+    for item in ranked[:3]:
+        if isinstance(item, (list, tuple)) and len(item) >= 2:
+            try:
+                cleaned.append((str(item[0]), float(item[1])))
+            except (TypeError, ValueError):
+                continue
+    return build_rank_signature(cleaned)
+
+
+def choose_ranked_message_condition(primary_state_id, ranked, history_rows, now_ts):
+    rotation = []
+    for condition, score in ranked:
+        if score < 2:
+            continue
+        if condition == "mensaje_general":
+            continue
+        rotation.append(condition)
+        if len(rotation) >= 3:
+            break
+    if not rotation:
+        rotation = [primary_state_id]
+    elif primary_state_id not in rotation:
+        rotation.insert(0, primary_state_id)
+    else:
+        rotation = [primary_state_id] + [item for item in rotation if item != primary_state_id]
+
+    if len(rotation) == 1:
+        return primary_state_id
+
+    current_signature = build_rank_signature(ranked)
+    anchor_ts = None
+    for row in reversed(history_rows):
+        if str(row.get("state_id") or "") != primary_state_id:
+            break
+        if parse_rank_signature(row.get("ranked_json")) != current_signature:
+            break
+        try:
+            anchor_ts = float(row.get("ts"))
+        except (TypeError, ValueError):
+            continue
+
+    if anchor_ts is None:
+        return primary_state_id
+
+    elapsed = max(0.0, now_ts - anchor_ts)
+    if elapsed < 180:
+        return primary_state_id
+
+    cycle_index = int(elapsed // 180) % len(rotation)
+    return rotation[cycle_index]
+
+
 def compute_local_24h_interpretation():
     latest = get_latest_map()
     messages = load_interpretation_messages()
     recent_phrases = get_recent_message_phrases()
+    recent_history = get_recent_interpretation_history(limit=18, seconds=12 * 3600)
 
     pressure = get_metric(latest, "pressure_hpa", "sensor_community_1")
     humidity = get_metric(latest, "rh_pct", "sensor_community_1")
@@ -1044,12 +1112,15 @@ def compute_local_24h_interpretation():
     observed_items = [pressure_val, humidity_val, temp_val, wind_val, rain_rate_val, rain_total_val, light_val, uv_raw_val, uv_voltage_val, pm10_val, pm25_val, ground_temp_val, ground_humidity_val]
     observed_count = sum(1 for value in observed_items if value is not None)
     confidence = confidence_from_score(state_score, observed_count)
-    seed = build_message_seed(state_id, state_score, confidence, ranked, time.time())
-    message = choose_message(messages, state_id, seed, recent_phrases)
+    now_ts = time.time()
+    message_condition = choose_ranked_message_condition(state_id, ranked, recent_history, now_ts)
+    message_score = next((score for condition, score in ranked if condition == message_condition), state_score)
+    seed = build_message_seed(message_condition, message_score, confidence, ranked, now_ts)
+    message = choose_message(messages, message_condition, seed, recent_phrases)
 
     fallback_text = "La estación lee el tiempo de cerca: hacen falta más señales para afinar el mensaje."
     phrase = message["phrase"] if message else fallback_text
-    reasons = evidence.get(state_id, [])
+    reasons = evidence.get(message_condition) or evidence.get(state_id, [])
     summary = reasons[0] if reasons else "estado local calculado con las señales disponibles"
     detail = " / ".join(reasons[:3]) if reasons else "Sin suficientes señales específicas."
     line1 = phrase
@@ -1073,7 +1144,7 @@ def compute_local_24h_interpretation():
         "summary": summary,
         "detail": detail,
         "phrase": phrase,
-        "message_condition": message["condition"] if message else None,
+        "message_condition": message["condition"] if message else message_condition,
         "message_category": message["category"] if message else None,
         "message_priority": message["priority"] if message else None,
         "ranked_json": json.dumps(ranked[:8], ensure_ascii=False, separators=(",", ":")),
@@ -1704,6 +1775,7 @@ def default_fx_config():
     return {
         "text_color_mode": "auto",
         "effect_mode": "auto",
+        "brightness": 24,
     }
 
 
@@ -1721,9 +1793,18 @@ def load_fx_config():
         effect_mode = str(data.get("effect_mode") or "none").lower()
         if effect_mode not in FX_EFFECT_PRESETS:
             effect_mode = "auto"
+        try:
+            brightness = int(round(float(data.get("brightness", 24))))
+        except Exception:
+            brightness = 24
+        if brightness < 0:
+            brightness = 0
+        if brightness > 40:
+            brightness = 40
         return {
             "text_color_mode": mode,
             "effect_mode": effect_mode,
+            "brightness": brightness,
         }
     except Exception:
         return default_fx_config()
@@ -2432,7 +2513,7 @@ def compute_forecast_payload():
         "headline": text_for_sign(headline),
         "line1": text_for_sign(line1),
         "line2": text_for_sign(line2),
-        "brightness": 64,
+        "brightness": int(fx_config.get("brightness", 24)),
         "effect": fx_display["effect"],
     }
 
@@ -2681,6 +2762,28 @@ def api_fx_text_color(mode: str = Form(...)):
         raise HTTPException(status_code=400, detail="invalid_color_mode")
     config = load_fx_config()
     config["text_color_mode"] = next_mode
+    save_fx_config(config)
+    return {
+        "ok": True,
+        "config": config,
+        "effects": [
+            {"id": key, "label": value["label"]}
+            for key, value in FX_EFFECT_PRESETS.items()
+        ],
+        "presets": [
+            {"id": key, "rgb": value}
+            for key, value in FX_COLOR_PRESETS.items()
+        ],
+    }
+
+
+@app.post("/api/fx/brightness")
+def api_fx_brightness(value: int = Form(...)):
+    brightness = int(value)
+    if brightness < 0 or brightness > 40:
+        raise HTTPException(status_code=400, detail="brightness_out_of_range")
+    config = load_fx_config()
+    config["brightness"] = brightness
     save_fx_config(config)
     return {
         "ok": True,
@@ -3478,6 +3581,11 @@ def index():
         <button onclick=\"setFxTextColor('purple')\">Morado</button>
       </div>
       <div id=\"fxColorPreview\" style=\"margin-top:14px; width:72px; height:18px; border-radius:999px; border:1px solid #999; background:#ddd;\"></div>
+      <div style=\"margin-top:12px;\">
+        <label for=\"fxBrightnessRange\">Brillo carteles</label>
+        <input id=\"fxBrightnessRange\" type=\"range\" min=\"0\" max=\"40\" step=\"1\" value=\"24\" style=\"width:240px; max-width:100%; margin-top:8px; display:block;\" oninput=\"onFxBrightnessPreview(this.value)\" onchange=\"setFxBrightness(this.value)\" />
+        <div id=\"fxBrightnessDetail\" style=\"margin-top:6px; opacity:0.85;\">Brillo actual: --</div>
+      </div>
       <div id=\"fxStatusDetail\" style=\"margin-top:12px; opacity:0.85;\">Esperando estado.</div>
       <div id=\"fxSuggestedText\" style=\"margin-top:8px; opacity:0.8;\"></div>
     </div>
@@ -3987,6 +4095,7 @@ def index():
       const config = fxState.config || {{}};
       const mode = config.text_color_mode || 'auto';
       const effectMode = config.effect_mode || 'none';
+      const brightness = Number(config.brightness ?? 24);
       const suggested = fxState.suggested || {{}};
       const hint = suggested.hint || {{}};
       const label = document.getElementById('fxColorModeLabel');
@@ -3994,8 +4103,12 @@ def index():
       const preview = document.getElementById('fxColorPreview');
       const effectLabel = document.getElementById('fxEffectModeLabel');
       const effectDetail = document.getElementById('fxEffectDetail');
+      const brightnessRange = document.getElementById('fxBrightnessRange');
+      const brightnessDetail = document.getElementById('fxBrightnessDetail');
       if (label) label.textContent = mode;
       if (effectLabel) effectLabel.textContent = effectMode;
+      if (brightnessRange) brightnessRange.value = String(brightness);
+      if (brightnessDetail) brightnessDetail.textContent = `Brillo actual: ${{brightness}} / 40`;
       if (detail) {{
         detail.textContent = mode === 'auto'
           ? 'El cartel usa el color sugerido por la interpretación local.'
@@ -4047,6 +4160,19 @@ def index():
       const form = new FormData();
       form.append('mode', mode);
       const res = await fetch('/api/fx/effect', {{ method: 'POST', body: form }});
+      const data = await res.json();
+      renderFxState(data);
+    }}
+
+    function onFxBrightnessPreview(value) {{
+      const detail = document.getElementById('fxBrightnessDetail');
+      if (detail) detail.textContent = `Brillo actual: ${{value}} / 40`;
+    }}
+
+    async function setFxBrightness(value) {{
+      const form = new FormData();
+      form.append('value', String(value));
+      const res = await fetch('/api/fx/brightness', {{ method: 'POST', body: form }});
       const data = await res.json();
       renderFxState(data);
     }}
