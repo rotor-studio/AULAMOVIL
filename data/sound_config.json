@@ -54,19 +54,6 @@
       "enabled": true
     },
     {
-      "id": "rule_1780484823759",
-      "name": "DRONE 1",
-      "device_id": "bme280_ground",
-      "metric_id": "temp_ground_c",
-      "sound_file": "DroneCalma.mp3",
-      "mode": "once",
-      "min_value": "20",
-      "max_value": "24",
-      "min_delta": 1.0,
-      "cooldown_sec": 10.0,
-      "enabled": true
-    },
-    {
       "id": "rule_1780485142998",
       "name": "DRONE 2",
       "device_id": "sensor_community_1",
@@ -127,6 +114,19 @@
       "mode": "loop",
       "min_value": "10",
       "max_value": "20",
+      "min_delta": 1.0,
+      "cooldown_sec": 10.0,
+      "enabled": true
+    },
+    {
+      "id": "rule_1780499259066",
+      "name": "DRONE 1",
+      "device_id": "bme280_ground",
+      "metric_id": "temp_ground_c",
+      "sound_file": "DroneCalma.mp3",
+      "mode": "loop",
+      "min_value": "20",
+      "max_value": "23",
       "min_delta": 1.0,
       "cooldown_sec": 10.0,
       "enabled": true
