@@ -103,6 +103,8 @@
   - rain / pluviometer ESP
 - `192.168.1.105`
   - horizontal LED sign
+- `192.168.1.112`
+  - smoke relay ESP
 
 ## Service Units
 - install these in `/etc/systemd/system/`:
@@ -186,11 +188,17 @@
   - `POST /api/vapor/set`
   - `GET /api/fan/state`
   - `POST /api/fan/set`
+  - `GET /api/smoke/state`
+  - `POST /api/smoke/set`
   - `GET /api/vapor/sequence`
   - `POST /api/vapor/sequence/record`
   - `POST /api/vapor/sequence/play`
   - `POST /api/vapor/sequence/stop`
   - `POST /api/vapor/sequence/clear`
+  - `POST /api/vapor/sequence/create`
+  - `POST /api/vapor/sequence/select`
+  - `POST /api/vapor/sequence/rename`
+  - `DELETE /api/vapor/sequence/{sequence_id}`
   - `GET /api/vapor/automation`
   - `POST /api/vapor/automation/rules`
   - `DELETE /api/vapor/automation/rules/{id}`
@@ -199,11 +207,14 @@
 - Current logical pin map in the repo:
   - `vapor -> D6`
   - `fan -> D2`
+- Smoke relay sketch in the repo:
+  - `esp8266/smoke_relay/smoke_relay.ino`
+  - `humo -> D5`
 - Do not hardcode the live relay IP in git-driven config for a rebuild recipe.
 - Current operator workflow:
-  - record a relay sequence from the dashboard
-  - replay it manually from the same tab
-  - optionally bind sensor thresholds to replay that sequence automatically
+  - record one of several named relay sequences from the dashboard
+  - replay the selected sequence manually from the same tab
+  - optionally bind sensor thresholds to replay a selected sequence automatically
 
 ## LED Signs
 - Shared endpoint for sign clients:
@@ -254,12 +265,14 @@
 - `curl http://127.0.0.1:8000/api/sound/state`
  - `curl http://127.0.0.1:8000/api/vapor/sequence`
  - `curl http://127.0.0.1:8000/api/vapor/automation`
+ - `curl http://127.0.0.1:8000/api/smoke/state`
 - `lsusb`
 - `aplay -l`
 - `vcgencmd get_throttled`
 - open `http://<pi-ip>:8000/`
 - verify `/hls/stream.m3u8`
 - verify `/api/vapor/state` and `/api/fan/state` when the relay module is enabled
+- verify `/api/smoke/state` when the smoke relay module is enabled
 - confirm `/opt/rotor-meteo/data/rotor.db` is growing
 - confirm `sensor_community_1` values appear in `/api/latest`
 - confirm `bme280_ground` values appear in `/api/latest`

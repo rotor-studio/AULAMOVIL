@@ -17,6 +17,7 @@
 - `192.168.1.102` vertical LED sign
 - `192.168.1.103` rain / pluviometer
 - `192.168.1.105` horizontal LED sign
+- `192.168.1.112` smoke relay ESP
 
 ## Camera (RTSP + HLS)
 We convert RTSP to HLS locally with ffmpeg.
@@ -66,11 +67,17 @@ Payload (JSON):
 - POST /api/vapor/set
 - GET /api/fan/state
 - POST /api/fan/set
+- GET /api/smoke/state
+- POST /api/smoke/set
 - GET /api/vapor/sequence
 - POST /api/vapor/sequence/record
 - POST /api/vapor/sequence/play
 - POST /api/vapor/sequence/stop
 - POST /api/vapor/sequence/clear
+- POST /api/vapor/sequence/create
+- POST /api/vapor/sequence/select
+- POST /api/vapor/sequence/rename
+- DELETE /api/vapor/sequence/{sequence_id}
 - GET /api/vapor/automation
 - POST /api/vapor/automation/rules
 - DELETE /api/vapor/automation/rules/{id}
@@ -79,18 +86,22 @@ Payload (JSON):
 - Dual relay module:
   - vapor on `D6`
   - fan on `D2`
+- Smoke relay module:
+  - humo on `D5`
 - The ESP address is expected to be provided at runtime in:
   - `/etc/rotor-meteo/secrets.yaml`
 - If DHCP changes the relay IP, update:
   - `vapor.base_url`
   - `fan.base_url`
+  - `smoke.base_url`
 - Runtime files used by the relay workflow:
   - `/opt/rotor-meteo/data/vapor_sequence.json`
   - `/opt/rotor-meteo/data/vapor_automation.json`
 - Dashboard behavior:
-  - manual vapor/fan toggle
-  - sequence recorder and playback
-  - sensor-driven rules that launch the saved sequence
+  - manual vapor/fan/humo toggle
+  - multiple named sequences
+  - sequence recorder and playback on the selected sequence
+  - sensor-driven rules that can launch a selected sequence
 
 ## LED Signs
 - Main sign endpoint:
