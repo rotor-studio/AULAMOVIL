@@ -1,5 +1,5 @@
 {
-  "enabled": true,
+  "enabled": false,
   "rules": [
     {
       "id": "rule_1780399209236",
@@ -127,6 +127,32 @@
       "mode": "loop",
       "min_value": "20",
       "max_value": "23",
+      "min_delta": 1.0,
+      "cooldown_sec": 10.0,
+      "enabled": true
+    },
+    {
+      "id": "rule_1780573180293",
+      "name": "Viento Lento",
+      "device_id": "wind_esp8266",
+      "metric_id": "wind_speed_ms",
+      "sound_file": "708532__michijung__dark-ambient-synth-drone.wav",
+      "mode": "loop",
+      "min_value": "2",
+      "max_value": "10",
+      "min_delta": 1.0,
+      "cooldown_sec": 10.0,
+      "enabled": true
+    },
+    {
+      "id": "rule_1780573455387",
+      "name": "Regla sonido",
+      "device_id": "bme280_ground",
+      "metric_id": "temp_ground_c",
+      "sound_file": "LluviayTruenos.wav",
+      "mode": "loop",
+      "min_value": "16",
+      "max_value": "20",
       "min_delta": 1.0,
       "cooldown_sec": 10.0,
       "enabled": true

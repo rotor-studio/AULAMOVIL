@@ -111,6 +111,9 @@
 - `fan.enabled`
 - `fan.base_url`
 - `fan.token`
+- `smoke.enabled`
+- `smoke.base_url`
+- `smoke.token`
 
 ## Current app.yaml Assumptions
 - MQTT:
@@ -157,6 +160,8 @@
   - rain / pluviometer ESP
 - `192.168.1.105`
   - horizontal LED sign
+- `192.168.1.112`
+  - smoke relay ESP
 
 ## Relay Control
 - Local web endpoints:
@@ -164,12 +169,18 @@
   - `POST /api/vapor/set`
   - `GET /api/fan/state`
   - `POST /api/fan/set`
+  - `GET /api/smoke/state`
+  - `POST /api/smoke/set`
 - Vapor sequence endpoints:
   - `GET /api/vapor/sequence`
   - `POST /api/vapor/sequence/record`
   - `POST /api/vapor/sequence/play`
   - `POST /api/vapor/sequence/stop`
   - `POST /api/vapor/sequence/clear`
+  - `POST /api/vapor/sequence/create`
+  - `POST /api/vapor/sequence/select`
+  - `POST /api/vapor/sequence/rename`
+  - `DELETE /api/vapor/sequence/{sequence_id}`
 - Vapor automation endpoints:
   - `GET /api/vapor/automation`
   - `POST /api/vapor/automation/rules`
@@ -186,13 +197,15 @@
 - Current UI behavior in `Vaporizadores`:
   - manual independent toggle for `vapor`
   - manual independent toggle for `fan`
+  - manual independent toggle for `humo`
+  - manage multiple named sequences
   - record a timed sequence by pressing `Grabar secuencia` and then using the manual toggles
-  - replay the saved sequence with `Play`
+  - replay the selected saved sequence with `Play`
   - stop playback with `Stop`
   - clear saved steps with `Borrar`
-  - a separate rule card can trigger sequence playback from sensor thresholds
+  - a separate rule card can trigger a selected sequence from sensor thresholds
 - Current sequence behavior:
-  - recording stores the initial state of both relays plus timed steps
+  - recording stores the initial state of vapor, fan and humo plus timed steps
   - playback is blocked while recording
   - automation rules do not fire while recording or while another playback is running
   - sequence list highlights the current step while replaying

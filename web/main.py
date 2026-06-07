@@ -1294,12 +1294,23 @@ def fan_request(method, path, fields=None):
     return actuator_request(method, "fan", path, fields)
 
 
-def default_vapor_sequence():
+def smoke_request(method, path, fields=None):
+    return actuator_request(method, "smoke", path, fields)
+
+
+def default_sequence_id():
+    return "default"
+
+
+def default_vapor_sequence_item(sequence_id=None, name="Secuencia 1"):
+    sequence_id = str(sequence_id or default_sequence_id()).strip() or default_sequence_id()
     return {
-        "version": 1,
+        "id": sequence_id,
+        "name": str(name or "Secuencia").strip() or "Secuencia",
         "initial": {
             "vapor": False,
             "fan": False,
+            "smoke": False,
         },
         "steps": [],
         "duration_sec": 0.0,
@@ -1309,42 +1320,38 @@ def default_vapor_sequence():
     }
 
 
-def load_vapor_sequence():
-    if not os.path.exists(VAPOR_SEQUENCE_PATH):
-        return default_vapor_sequence()
-    try:
-        with open(VAPOR_SEQUENCE_PATH, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        if not isinstance(data, dict):
-            return default_vapor_sequence()
-        payload = default_vapor_sequence()
-        payload.update(data)
-        if not isinstance(payload.get("initial"), dict):
-            payload["initial"] = {"vapor": False, "fan": False}
-        payload["initial"].setdefault("vapor", False)
-        payload["initial"].setdefault("fan", False)
-        steps = payload.get("steps")
-        payload["steps"] = steps if isinstance(steps, list) else []
-        payload["duration_sec"] = float(payload.get("duration_sec") or 0.0)
-        return payload
-    except Exception:
-        return default_vapor_sequence()
-
-
-def save_vapor_sequence(sequence):
-    os.makedirs(os.path.dirname(VAPOR_SEQUENCE_PATH), exist_ok=True)
-    payload = default_vapor_sequence()
-    payload.update(sequence or {})
-    payload["initial"] = {
-        "vapor": bool((payload.get("initial") or {}).get("vapor", False)),
-        "fan": bool((payload.get("initial") or {}).get("fan", False)),
+def default_vapor_sequence_store():
+    default_sequence = default_vapor_sequence_item()
+    return {
+        "version": 2,
+        "active_sequence_id": default_sequence["id"],
+        "sequences": [default_sequence],
     }
+
+
+def normalize_vapor_sequence_item(sequence, fallback_id=None, fallback_name=None):
+    payload = default_vapor_sequence_item(
+        sequence_id=fallback_id,
+        name=fallback_name or "Secuencia",
+    )
+    payload.update(sequence or {})
+    payload["id"] = str(payload.get("id") or fallback_id or uuid.uuid4().hex).strip() or uuid.uuid4().hex
+    payload["name"] = str(payload.get("name") or fallback_name or payload["id"]).strip() or payload["id"]
+    if not isinstance(payload.get("initial"), dict):
+        payload["initial"] = {"vapor": False, "fan": False, "smoke": False}
+    payload["initial"] = {
+        "vapor": bool(payload["initial"].get("vapor", False)),
+        "fan": bool(payload["initial"].get("fan", False)),
+        "smoke": bool(payload["initial"].get("smoke", False)),
+    }
+    steps = payload.get("steps")
+    payload["steps"] = steps if isinstance(steps, list) else []
     normalized_steps = []
     for step in payload.get("steps", []):
         if not isinstance(step, dict):
             continue
         actuator = str(step.get("actuator") or "").strip().lower()
-        if actuator not in ("vapor", "fan"):
+        if actuator not in ("vapor", "fan", "smoke"):
             continue
         try:
             at_ms = int(round(float(step.get("at_ms", 0))))
@@ -1359,33 +1366,119 @@ def save_vapor_sequence(sequence):
     payload["steps"] = normalized_steps
     duration_ms = normalized_steps[-1]["at_ms"] if normalized_steps else 0
     payload["duration_sec"] = round(duration_ms / 1000.0, 3)
+    return payload
+
+
+def normalize_vapor_sequence_store(data):
+    default_store = default_vapor_sequence_store()
+    if not isinstance(data, dict):
+        return default_store
+
+    # Backward compatibility: old single-sequence shape.
+    if "sequences" not in data and "steps" in data:
+        migrated = default_vapor_sequence_item()
+        migrated.update(data)
+        sequence = normalize_vapor_sequence_item(migrated, fallback_id=default_sequence_id(), fallback_name="Secuencia 1")
+        return {
+            "version": 2,
+            "active_sequence_id": sequence["id"],
+            "sequences": [sequence],
+        }
+
+    store = {
+        "version": 2,
+        "active_sequence_id": str(data.get("active_sequence_id") or default_store["active_sequence_id"]).strip() or default_store["active_sequence_id"],
+        "sequences": [],
+    }
+    sequences = data.get("sequences")
+    if not isinstance(sequences, list):
+        sequences = []
+    seen_ids = set()
+    for index, raw in enumerate(sequences):
+        fallback_name = f"Secuencia {index + 1}"
+        normalized = normalize_vapor_sequence_item(raw, fallback_name=fallback_name)
+        if normalized["id"] in seen_ids:
+            normalized["id"] = uuid.uuid4().hex
+        seen_ids.add(normalized["id"])
+        store["sequences"].append(normalized)
+    if not store["sequences"]:
+        store["sequences"] = list(default_store["sequences"])
+    if store["active_sequence_id"] not in {item["id"] for item in store["sequences"]}:
+        store["active_sequence_id"] = store["sequences"][0]["id"]
+    return store
+
+
+def load_vapor_sequence_store():
+    if not os.path.exists(VAPOR_SEQUENCE_PATH):
+        return default_vapor_sequence_store()
+    try:
+        with open(VAPOR_SEQUENCE_PATH, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return normalize_vapor_sequence_store(data)
+    except Exception:
+        return default_vapor_sequence_store()
+
+
+def save_vapor_sequence_store(store):
+    os.makedirs(os.path.dirname(VAPOR_SEQUENCE_PATH), exist_ok=True)
+    payload = normalize_vapor_sequence_store(store or {})
     with open(VAPOR_SEQUENCE_PATH, "w", encoding="utf-8") as f:
         json.dump(payload, f, ensure_ascii=False, indent=2)
     return payload
+
+
+def get_sequence_from_store(store, sequence_id=None):
+    store = normalize_vapor_sequence_store(store or {})
+    wanted_id = str(sequence_id or store.get("active_sequence_id") or "").strip()
+    for sequence in store.get("sequences", []):
+        if sequence.get("id") == wanted_id:
+            return sequence
+    return store["sequences"][0]
+
+
+def upsert_sequence_in_store(store, sequence):
+    store = normalize_vapor_sequence_store(store or {})
+    normalized = normalize_vapor_sequence_item(sequence)
+    sequences = list(store.get("sequences", []))
+    for index, item in enumerate(sequences):
+        if item.get("id") == normalized["id"]:
+            sequences[index] = normalized
+            break
+    else:
+        sequences.append(normalized)
+    store["sequences"] = sequences
+    if normalized["id"]:
+        store["active_sequence_id"] = normalized["id"]
+    return store
 
 
 vapor_sequence_lock = threading.Lock()
 vapor_sequence_runtime = {
     "recording": False,
     "record_started_monotonic": None,
+    "record_sequence_id": None,
     "playing": False,
     "play_started_monotonic": None,
+    "play_sequence_id": None,
     "play_thread": None,
     "play_stop_event": threading.Event(),
 }
 
 
-def vapor_sequence_status():
-    sequence = load_vapor_sequence()
+def vapor_sequence_status(sequence_id=None):
+    store = load_vapor_sequence_store()
+    sequence = get_sequence_from_store(store, sequence_id)
     with vapor_sequence_lock:
         record_started = vapor_sequence_runtime.get("record_started_monotonic")
         play_started = vapor_sequence_runtime.get("play_started_monotonic")
         recording = bool(vapor_sequence_runtime.get("recording"))
         playing = bool(vapor_sequence_runtime.get("playing"))
+        record_sequence_id = vapor_sequence_runtime.get("record_sequence_id")
+        play_sequence_id = vapor_sequence_runtime.get("play_sequence_id")
     now_mono = time.monotonic()
     play_elapsed_sec = round(now_mono - play_started, 2) if playing and play_started else 0.0
     current_step_index = None
-    if playing and play_started:
+    if playing and play_started and play_sequence_id == sequence.get("id"):
         elapsed_ms = max(0, int(round((now_mono - play_started) * 1000.0)))
         for index, step in enumerate(sequence.get("steps", [])):
             if elapsed_ms >= int(step.get("at_ms", 0)):
@@ -1394,6 +1487,20 @@ def vapor_sequence_status():
                 break
     return {
         "ok": True,
+        "sequence_id": sequence.get("id"),
+        "sequence_name": sequence.get("name"),
+        "active_sequence_id": store.get("active_sequence_id"),
+        "sequences": [
+            {
+                "id": item.get("id"),
+                "name": item.get("name"),
+                "step_count": len(item.get("steps", [])),
+                "duration_sec": float(item.get("duration_sec") or 0.0),
+                "last_played_at": item.get("last_played_at"),
+                "updated_at": item.get("updated_at"),
+            }
+            for item in store.get("sequences", [])
+        ],
         "recording": recording,
         "playing": playing,
         "step_count": len(sequence.get("steps", [])),
@@ -1401,9 +1508,9 @@ def vapor_sequence_status():
         "created_at": sequence.get("created_at"),
         "updated_at": sequence.get("updated_at"),
         "last_played_at": sequence.get("last_played_at"),
-        "initial": sequence.get("initial", {"vapor": False, "fan": False}),
+        "initial": sequence.get("initial", {"vapor": False, "fan": False, "smoke": False}),
         "steps": sequence.get("steps", []),
-        "record_elapsed_sec": round(now_mono - record_started, 2) if recording and record_started else 0.0,
+        "record_elapsed_sec": round(now_mono - record_started, 2) if recording and record_started and record_sequence_id == sequence.get("id") else 0.0,
         "play_elapsed_sec": play_elapsed_sec,
         "current_step_index": current_step_index,
     }
@@ -1419,42 +1526,58 @@ def stop_vapor_sequence_playback():
     with vapor_sequence_lock:
         vapor_sequence_runtime["playing"] = False
         vapor_sequence_runtime["play_started_monotonic"] = None
+        vapor_sequence_runtime["play_sequence_id"] = None
         vapor_sequence_runtime["play_thread"] = None
         vapor_sequence_runtime["play_stop_event"] = threading.Event()
 
 
-def start_vapor_sequence_recording():
+def start_vapor_sequence_recording(sequence_id=None):
     stop_vapor_sequence_playback()
     vapor_state = api_vapor_state()
     fan_state = api_fan_state()
-    sequence = default_vapor_sequence()
+    smoke_state = api_smoke_state()
+    store = load_vapor_sequence_store()
+    sequence = get_sequence_from_store(store, sequence_id)
+    sequence = normalize_vapor_sequence_item(sequence, fallback_id=sequence.get("id"), fallback_name=sequence.get("name"))
     sequence["initial"] = {
         "vapor": bool(vapor_state.get("relay_on", False)),
         "fan": bool(fan_state.get("relay_on", False)),
+        "smoke": bool(smoke_state.get("relay_on", False)),
     }
+    sequence["steps"] = []
+    sequence["duration_sec"] = 0.0
     now_iso = datetime.now(timezone.utc).isoformat()
-    sequence["created_at"] = now_iso
+    sequence["created_at"] = sequence.get("created_at") or now_iso
     sequence["updated_at"] = now_iso
-    save_vapor_sequence(sequence)
+    store = upsert_sequence_in_store(store, sequence)
+    save_vapor_sequence_store(store)
     with vapor_sequence_lock:
         vapor_sequence_runtime["recording"] = True
         vapor_sequence_runtime["record_started_monotonic"] = time.monotonic()
-    return vapor_sequence_status()
+        vapor_sequence_runtime["record_sequence_id"] = sequence["id"]
+    return vapor_sequence_status(sequence["id"])
 
 
 def stop_vapor_sequence_recording():
     with vapor_sequence_lock:
         vapor_sequence_runtime["recording"] = False
         vapor_sequence_runtime["record_started_monotonic"] = None
+        vapor_sequence_runtime["record_sequence_id"] = None
     return vapor_sequence_status()
 
 
-def clear_vapor_sequence():
+def clear_vapor_sequence(sequence_id=None):
     stop_vapor_sequence_playback()
     with vapor_sequence_lock:
         vapor_sequence_runtime["recording"] = False
         vapor_sequence_runtime["record_started_monotonic"] = None
-    return save_vapor_sequence(default_vapor_sequence())
+        vapor_sequence_runtime["record_sequence_id"] = None
+    store = load_vapor_sequence_store()
+    sequence = get_sequence_from_store(store, sequence_id)
+    cleared = default_vapor_sequence_item(sequence_id=sequence.get("id"), name=sequence.get("name"))
+    store = upsert_sequence_in_store(store, cleared)
+    save_vapor_sequence_store(store)
+    return vapor_sequence_status(sequence.get("id"))
 
 
 def append_vapor_sequence_step(actuator, enabled):
@@ -1462,10 +1585,12 @@ def append_vapor_sequence_step(actuator, enabled):
         if not vapor_sequence_runtime.get("recording"):
             return None
         started = vapor_sequence_runtime.get("record_started_monotonic")
+        sequence_id = vapor_sequence_runtime.get("record_sequence_id")
     if not started:
         return None
     elapsed_ms = int(round((time.monotonic() - started) * 1000.0))
-    sequence = load_vapor_sequence()
+    store = load_vapor_sequence_store()
+    sequence = get_sequence_from_store(store, sequence_id)
     steps = list(sequence.get("steps", []))
     step = {
         "actuator": str(actuator).strip().lower(),
@@ -1479,7 +1604,9 @@ def append_vapor_sequence_step(actuator, enabled):
     steps.append(step)
     sequence["steps"] = steps
     sequence["updated_at"] = datetime.now(timezone.utc).isoformat()
-    return save_vapor_sequence(sequence)
+    store = upsert_sequence_in_store(store, sequence)
+    save_vapor_sequence_store(store)
+    return sequence
 
 
 def set_actuator_enabled(actuator, enabled):
@@ -1488,6 +1615,8 @@ def set_actuator_enabled(actuator, enabled):
         return vapor_request("POST", "/api/vapor/set", {"enabled": next_enabled})
     if actuator == "fan":
         return fan_request("POST", "/api/fan/set", {"enabled": next_enabled})
+    if actuator == "smoke":
+        return smoke_request("POST", "/api/smoke/set", {"enabled": next_enabled})
     raise ValueError("invalid_actuator")
 
 
@@ -1499,6 +1628,7 @@ def run_vapor_sequence_playback(sequence):
         initial = sequence.get("initial", {})
         set_actuator_enabled("vapor", bool(initial.get("vapor", False)))
         set_actuator_enabled("fan", bool(initial.get("fan", False)))
+        set_actuator_enabled("smoke", bool(initial.get("smoke", False)))
         steps = list(sequence.get("steps", []))
         started = time.monotonic()
         for step in steps:
@@ -1513,17 +1643,21 @@ def run_vapor_sequence_playback(sequence):
                     return
             set_actuator_enabled(step.get("actuator"), bool(step.get("enabled", False)))
         sequence["last_played_at"] = datetime.now(timezone.utc).isoformat()
-        save_vapor_sequence(sequence)
+        store = load_vapor_sequence_store()
+        store = upsert_sequence_in_store(store, sequence)
+        save_vapor_sequence_store(store)
     finally:
         with vapor_sequence_lock:
             vapor_sequence_runtime["playing"] = False
             vapor_sequence_runtime["play_started_monotonic"] = None
+            vapor_sequence_runtime["play_sequence_id"] = None
             vapor_sequence_runtime["play_thread"] = None
             vapor_sequence_runtime["play_stop_event"] = threading.Event()
 
 
-def start_vapor_sequence_playback():
-    sequence = load_vapor_sequence()
+def start_vapor_sequence_playback(sequence_id=None):
+    store = load_vapor_sequence_store()
+    sequence = get_sequence_from_store(store, sequence_id)
     if not sequence.get("steps"):
         raise ValueError("sequence_empty")
     with vapor_sequence_lock:
@@ -1533,6 +1667,7 @@ def start_vapor_sequence_playback():
     with vapor_sequence_lock:
         vapor_sequence_runtime["playing"] = True
         vapor_sequence_runtime["play_started_monotonic"] = time.monotonic()
+        vapor_sequence_runtime["play_sequence_id"] = sequence.get("id")
         vapor_sequence_runtime["play_stop_event"] = threading.Event()
         thread = threading.Thread(
             target=run_vapor_sequence_playback,
@@ -1541,7 +1676,54 @@ def start_vapor_sequence_playback():
         )
         vapor_sequence_runtime["play_thread"] = thread
         thread.start()
-    return vapor_sequence_status()
+    return vapor_sequence_status(sequence.get("id"))
+
+
+def create_vapor_sequence(name):
+    store = load_vapor_sequence_store()
+    existing_names = {str(item.get("name") or "").strip().lower() for item in store.get("sequences", [])}
+    base_name = str(name or "").strip() or f"Secuencia {len(store.get('sequences', [])) + 1}"
+    candidate_name = base_name
+    suffix = 2
+    while candidate_name.strip().lower() in existing_names:
+        candidate_name = f"{base_name} {suffix}"
+        suffix += 1
+    sequence = default_vapor_sequence_item(sequence_id=uuid.uuid4().hex, name=candidate_name)
+    sequence["created_at"] = datetime.now(timezone.utc).isoformat()
+    sequence["updated_at"] = sequence["created_at"]
+    store = upsert_sequence_in_store(store, sequence)
+    save_vapor_sequence_store(store)
+    return vapor_sequence_status(sequence["id"])
+
+
+def rename_vapor_sequence(sequence_id, name):
+    store = load_vapor_sequence_store()
+    sequence = get_sequence_from_store(store, sequence_id)
+    sequence["name"] = str(name or "").strip() or sequence.get("name") or "Secuencia"
+    sequence["updated_at"] = datetime.now(timezone.utc).isoformat()
+    store = upsert_sequence_in_store(store, sequence)
+    save_vapor_sequence_store(store)
+    return vapor_sequence_status(sequence["id"])
+
+
+def delete_vapor_sequence(sequence_id):
+    store = load_vapor_sequence_store()
+    sequences = [item for item in store.get("sequences", []) if item.get("id") != sequence_id]
+    if not sequences:
+        sequences = default_vapor_sequence_store()["sequences"]
+    store["sequences"] = sequences
+    if store.get("active_sequence_id") == sequence_id:
+        store["active_sequence_id"] = sequences[0]["id"]
+    save_vapor_sequence_store(store)
+    return vapor_sequence_status(store["active_sequence_id"])
+
+
+def select_vapor_sequence(sequence_id):
+    store = load_vapor_sequence_store()
+    sequence = get_sequence_from_store(store, sequence_id)
+    store["active_sequence_id"] = sequence["id"]
+    save_vapor_sequence_store(store)
+    return vapor_sequence_status(sequence["id"])
 
 
 def default_vapor_automation_config():
@@ -1636,9 +1818,10 @@ class VaporAutomationEngine:
                 )
                 if should_trigger:
                     try:
-                        runtime = vapor_sequence_status()
+                        sequence_id = str(rule.get("sequence_id") or "").strip() or None
+                        runtime = vapor_sequence_status(sequence_id)
                         if not runtime.get("recording") and not runtime.get("playing"):
-                            start_vapor_sequence_playback()
+                            start_vapor_sequence_playback(sequence_id)
                             state["last_trigger_ts"] = now
                             state["active"] = True
                     except Exception:
@@ -2851,22 +3034,37 @@ def api_fan_set(enabled: bool = Form(...)):
     return result
 
 
+@app.get("/api/smoke/state")
+def api_smoke_state():
+    return smoke_request("GET", "/api/smoke/state")
+
+
+@app.post("/api/smoke/set")
+def api_smoke_set(enabled: bool = Form(...)):
+    result = smoke_request("POST", "/api/smoke/set", {
+        "enabled": "true" if enabled else "false",
+    })
+    if result.get("ok") and result.get("online") and result.get("configured"):
+        append_vapor_sequence_step("smoke", bool(result.get("relay_on", enabled)))
+    return result
+
+
 @app.get("/api/vapor/sequence")
-def api_vapor_sequence():
-    return vapor_sequence_status()
+def api_vapor_sequence(sequence_id: str | None = None):
+    return vapor_sequence_status(sequence_id)
 
 
 @app.post("/api/vapor/sequence/record")
-def api_vapor_sequence_record(recording: bool = Form(...)):
+def api_vapor_sequence_record(recording: bool = Form(...), sequence_id: str | None = Form(None)):
     if recording:
-        return start_vapor_sequence_recording()
+        return start_vapor_sequence_recording(sequence_id)
     return stop_vapor_sequence_recording()
 
 
 @app.post("/api/vapor/sequence/play")
-def api_vapor_sequence_play():
+def api_vapor_sequence_play(sequence_id: str | None = Form(None)):
     try:
-        return start_vapor_sequence_playback()
+        return start_vapor_sequence_playback(sequence_id)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
@@ -2878,9 +3076,29 @@ def api_vapor_sequence_stop():
 
 
 @app.post("/api/vapor/sequence/clear")
-def api_vapor_sequence_clear():
-    clear_vapor_sequence()
-    return vapor_sequence_status()
+def api_vapor_sequence_clear(sequence_id: str | None = Form(None)):
+    clear_vapor_sequence(sequence_id)
+    return vapor_sequence_status(sequence_id)
+
+
+@app.post("/api/vapor/sequence/create")
+def api_vapor_sequence_create(name: str = Form("Secuencia")):
+    return create_vapor_sequence(name)
+
+
+@app.post("/api/vapor/sequence/select")
+def api_vapor_sequence_select(sequence_id: str = Form(...)):
+    return select_vapor_sequence(sequence_id)
+
+
+@app.post("/api/vapor/sequence/rename")
+def api_vapor_sequence_rename(sequence_id: str = Form(...), name: str = Form(...)):
+    return rename_vapor_sequence(sequence_id, name)
+
+
+@app.delete("/api/vapor/sequence/{sequence_id}")
+def api_vapor_sequence_delete(sequence_id: str):
+    return delete_vapor_sequence(sequence_id)
 
 
 @app.get("/api/vapor/automation")
@@ -2918,6 +3136,7 @@ def api_vapor_automation_rules(payload: dict):
             "name": str(raw.get("name") or rid),
             "device_id": raw.get("device_id") or "",
             "metric_id": raw.get("metric_id") or "",
+            "sequence_id": str(raw.get("sequence_id") or "").strip() or None,
             "min_value": raw.get("min_value"),
             "max_value": raw.get("max_value"),
             "min_delta": float(raw.get("min_delta") or 0.0),
@@ -3514,10 +3733,28 @@ def index():
         <div id=\"fanStatusDetail\" style=\"margin-top:12px; opacity:0.85;\">Control independiente del ventilador.</div>
       </div>
       <div class=\"card\">
+        <h3>Humo</h3>
+        <p><span id=\"smokePilot\" class=\"vapor-pilot offline\"></span><strong id=\"smokeStateLabel\">Sin conexión</strong></p>
+        <div class=\"timelapse-actions\" style=\"margin-top:12px;\">
+          <button id=\"smokeToggleButton\" class=\"vapor-toggle\" onclick=\"toggleSmoke()\">Activar humo</button>
+        </div>
+        <div id=\"smokeStatusDetail\" style=\"margin-top:12px; opacity:0.85;\">Control independiente de la máquina de humo.</div>
+      </div>
+      <div class=\"card\">
         <h3>Secuencia</h3>
         <div id=\"vaporSequenceStatus\" style=\"opacity:0.9;\">Sin secuencia grabada.</div>
+        <div style=\"margin-top:12px;\">
+          <label>Secuencia activa</label><br>
+          <select id=\"vaporSequenceSelect\" style=\"min-width:280px; max-width:100%;\" onchange=\"selectVaporSequence(this.value)\"></select>
+        </div>
+        <div class=\"timelapse-actions\" style=\"margin-top:10px;\">
+          <input id=\"vaporSequenceName\" placeholder=\"Nombre de secuencia\" />
+          <button onclick=\"createVaporSequence()\">Nueva</button>
+          <button onclick=\"renameVaporSequence()\">Renombrar</button>
+          <button onclick=\"deleteVaporSequence()\">Eliminar secuencia</button>
+        </div>
         <div id=\"vaporSequenceMeta\" style=\"margin-top:8px; opacity:0.82;\">Pasos: 0 | Duración: 0.0 s</div>
-        <div id=\"vaporSequenceInitial\" style=\"margin-top:6px; opacity:0.82;\">Inicio: vapor OFF | ventilador OFF</div>
+        <div id=\"vaporSequenceInitial\" style=\"margin-top:6px; opacity:0.82;\">Inicio: vapor OFF | ventilador OFF | humo OFF</div>
         <div id=\"vaporSequenceRuntime\" style=\"margin-top:6px; opacity:0.82;\">Grabación: parada | Reproducción: parada</div>
         <div class=\"timelapse-actions\" style=\"margin-top:12px;\">
           <button id=\"vaporSequenceRecordButton\" onclick=\"toggleVaporSequenceRecording()\">Grabar secuencia</button>
@@ -3533,6 +3770,10 @@ def index():
         <div style=\"margin-top:12px;\">
           <label>Sensor</label><br>
           <select id=\"vaporRuleMetricSelect\" style=\"min-width:320px; max-width:100%;\"></select>
+        </div>
+        <div style=\"margin-top:10px;\">
+          <label>Secuencia</label><br>
+          <select id=\"vaporRuleSequenceSelect\" style=\"min-width:320px; max-width:100%;\"></select>
         </div>
         <div style=\"margin-top:10px;\">
           <label>Nombre</label><br>
@@ -3892,6 +4133,8 @@ def index():
     let vaporBusy = false;
     let fanState = null;
     let fanBusy = false;
+    let smokeState = null;
+    let smokeBusy = false;
     let vaporSequenceState = null;
     let fxState = null;
     let windCalibration = {{ calibration: {{ offset_deg: 0.0, east_reference_deg: null, updated_at: null }} }};
@@ -4190,6 +4433,19 @@ def index():
       renderVaporSequenceState(vaporSequenceState);
     }}
 
+    function renderSmokeState(data) {{
+      smokeState = data || {{}};
+      renderActuatorControl('smoke', smokeState, smokeBusy, {{
+        onText: 'Humo activado',
+        offText: 'Humo apagado',
+        enableButton: 'Activar humo',
+        disableButton: 'Apagar humo',
+        readyText: '',
+        notConfiguredText: 'Control del humo pendiente de configuración.',
+      }});
+      renderVaporSequenceState(vaporSequenceState);
+    }}
+
     function formatSequenceSeconds(value) {{
       const numeric = Number(value || 0);
       return numeric.toFixed(1);
@@ -4203,6 +4459,8 @@ def index():
       const initialEl = document.getElementById('vaporSequenceInitial');
       const runtimeEl = document.getElementById('vaporSequenceRuntime');
       const stepsEl = document.getElementById('vaporSequenceSteps');
+      const selectEl = document.getElementById('vaporSequenceSelect');
+      const nameEl = document.getElementById('vaporSequenceName');
       const recordButton = document.getElementById('vaporSequenceRecordButton');
       const playButton = document.getElementById('vaporSequencePlayButton');
       const stopButton = document.getElementById('vaporSequenceStopButton');
@@ -4213,16 +4471,26 @@ def index():
       const playing = !!state.playing;
       const initial = state.initial || {{}};
       const currentStepIndex = Number.isInteger(state.current_step_index) ? state.current_step_index : null;
+      const currentSequenceId = state.sequence_id || state.active_sequence_id || '';
+      const sequences = Array.isArray(state.sequences) ? state.sequences : [];
 
       if (statusEl) {{
-        if (recording) statusEl.textContent = 'Grabando secuencia. Usa los botones de vapor y ventilador.';
+        if (recording) statusEl.textContent = 'Grabando secuencia. Usa los botones de vapor, ventilador y humo.';
         else if (playing) statusEl.textContent = 'Reproduciendo secuencia guardada.';
         else if (stepCount > 0) statusEl.textContent = 'Secuencia lista para reproducir.';
         else statusEl.textContent = 'Sin secuencia grabada.';
       }}
+      if (selectEl) {{
+        const previous = selectEl.value;
+        selectEl.innerHTML = sequences.map(item => `<option value="${{item.id}}">${{item.name}} (${{item.step_count}} pasos)</option>`).join('');
+        selectEl.value = currentSequenceId || previous;
+      }}
+      if (nameEl && !nameEl.matches(':focus')) {{
+        nameEl.value = state.sequence_name || '';
+      }}
       if (metaEl) metaEl.textContent = `Pasos: ${{stepCount}} | Duración: ${{duration}} s`;
       if (initialEl) {{
-        initialEl.textContent = `Inicio: vapor ${{initial.vapor ? 'ON' : 'OFF'}} | ventilador ${{initial.fan ? 'ON' : 'OFF'}}`;
+        initialEl.textContent = `Inicio: vapor ${{initial.vapor ? 'ON' : 'OFF'}} | ventilador ${{initial.fan ? 'ON' : 'OFF'}} | humo ${{initial.smoke ? 'ON' : 'OFF'}}`;
       }}
       if (runtimeEl) {{
         const rec = recording ? `grabando (${{formatSequenceSeconds(state.record_elapsed_sec)}} s)` : 'parada';
@@ -4236,7 +4504,7 @@ def index():
         }} else {{
           stepsEl.innerHTML = steps.map((step, index) => {{
             const when = (Number(step.at_ms || 0) / 1000).toFixed(2).padStart(6, ' ');
-            const actuator = step.actuator === 'fan' ? 'ventilador' : 'vapor';
+            const actuator = step.actuator === 'fan' ? 'ventilador' : (step.actuator === 'smoke' ? 'humo' : 'vapor');
             const active = playing && currentStepIndex === index;
             const style = active
               ? 'display:block; padding:3px 6px; margin:2px 0; border-radius:6px; background:rgba(46,204,113,0.22); color:#0b5d1e; font-weight:700;'
@@ -4254,41 +4522,55 @@ def index():
       const disableManual = playing;
       const vaporButton = document.getElementById('vaporToggleButton');
       const fanButton = document.getElementById('fanToggleButton');
+      const smokeButton = document.getElementById('smokeToggleButton');
       if (vaporButton && vaporState) {{
         vaporButton.disabled = disableManual || vaporBusy || !vaporState.configured || !vaporState.online;
       }}
       if (fanButton && fanState) {{
         fanButton.disabled = disableManual || fanBusy || !fanState.configured || !fanState.online;
       }}
+      if (smokeButton && smokeState) {{
+        smokeButton.disabled = disableManual || smokeBusy || !smokeState.configured || !smokeState.online;
+      }}
     }}
 
-    async function loadVaporSequenceState() {{
+    async function loadVaporSequenceState(sequenceId = null) {{
       try {{
-        const res = await fetch('/api/vapor/sequence', {{ cache: 'no-store' }});
+        const url = sequenceId ? `/api/vapor/sequence?sequence_id=${{encodeURIComponent(sequenceId)}}` : '/api/vapor/sequence';
+        const res = await fetch(url, {{ cache: 'no-store' }});
         const data = await res.json();
         renderVaporSequenceState(data);
       }} catch (error) {{
-        renderVaporSequenceState({{ recording: false, playing: false, step_count: 0, duration_sec: 0, initial: {{ vapor: false, fan: false }}, steps: [] }});
+        renderVaporSequenceState({{ recording: false, playing: false, step_count: 0, duration_sec: 0, initial: {{ vapor: false, fan: false, smoke: false }}, steps: [] }});
       }}
+    }}
+
+    function currentVaporSequenceId() {{
+      return vaporSequenceState?.sequence_id || vaporSequenceState?.active_sequence_id || document.getElementById('vaporSequenceSelect')?.value || '';
     }}
 
     async function toggleVaporSequenceRecording() {{
       const state = vaporSequenceState || {{}};
       const form = new FormData();
       form.append('recording', state.recording ? 'false' : 'true');
+      form.append('sequence_id', currentVaporSequenceId());
       const res = await fetch('/api/vapor/sequence/record', {{ method: 'POST', body: form }});
       const data = await res.json();
       renderVaporSequenceState(data);
       await loadVaporState();
       await loadFanState();
+      await loadSmokeState();
     }}
 
     async function playVaporSequence() {{
-      const res = await fetch('/api/vapor/sequence/play', {{ method: 'POST' }});
+      const form = new FormData();
+      form.append('sequence_id', currentVaporSequenceId());
+      const res = await fetch('/api/vapor/sequence/play', {{ method: 'POST', body: form }});
       const data = await res.json();
       renderVaporSequenceState(data);
       await loadVaporState();
       await loadFanState();
+      await loadSmokeState();
     }}
 
     async function stopVaporSequencePlayback() {{
@@ -4297,12 +4579,52 @@ def index():
       renderVaporSequenceState(data);
       await loadVaporState();
       await loadFanState();
+      await loadSmokeState();
     }}
 
     async function clearVaporSequence() {{
-      const res = await fetch('/api/vapor/sequence/clear', {{ method: 'POST' }});
+      const form = new FormData();
+      form.append('sequence_id', currentVaporSequenceId());
+      const res = await fetch('/api/vapor/sequence/clear', {{ method: 'POST', body: form }});
       const data = await res.json();
       renderVaporSequenceState(data);
+    }}
+
+    async function selectVaporSequence(sequenceId) {{
+      const form = new FormData();
+      form.append('sequence_id', sequenceId);
+      const res = await fetch('/api/vapor/sequence/select', {{ method: 'POST', body: form }});
+      const data = await res.json();
+      renderVaporSequenceState(data);
+      await loadVaporAutomationState();
+    }}
+
+    async function createVaporSequence() {{
+      const form = new FormData();
+      form.append('name', document.getElementById('vaporSequenceName')?.value || 'Secuencia');
+      const res = await fetch('/api/vapor/sequence/create', {{ method: 'POST', body: form }});
+      const data = await res.json();
+      renderVaporSequenceState(data);
+      await loadVaporAutomationState();
+    }}
+
+    async function renameVaporSequence() {{
+      const form = new FormData();
+      form.append('sequence_id', currentVaporSequenceId());
+      form.append('name', document.getElementById('vaporSequenceName')?.value || 'Secuencia');
+      const res = await fetch('/api/vapor/sequence/rename', {{ method: 'POST', body: form }});
+      const data = await res.json();
+      renderVaporSequenceState(data);
+      await loadVaporAutomationState();
+    }}
+
+    async function deleteVaporSequence() {{
+      const sequenceId = currentVaporSequenceId();
+      if (!sequenceId) return;
+      const res = await fetch(`/api/vapor/sequence/${{encodeURIComponent(sequenceId)}}`, {{ method: 'DELETE' }});
+      const data = await res.json();
+      renderVaporSequenceState(data);
+      await loadVaporAutomationState();
     }}
 
     function renderVaporAutomationState(payload) {{
@@ -4312,6 +4634,7 @@ def index():
       const rules = config.rules || [];
       const engine = vaporAutomationState.engine || {{}};
       const sequence = vaporAutomationState.sequence || {{}};
+      const sequences = Array.isArray(sequence.sequences) ? sequence.sequences : [];
       const activeRuleIds = new Set((engine.active_rule_ids || []).map(String));
 
       const metricSelect = document.getElementById('vaporRuleMetricSelect');
@@ -4319,6 +4642,12 @@ def index():
         const current = metricSelect.value;
         metricSelect.innerHTML = metrics.map(item => `<option value="${{metricOptionValue(item)}}">${{item.label}} (${{item.value}} ${{item.unit || ''}})</option>`).join('');
         if (current) metricSelect.value = current;
+      }}
+      const sequenceSelect = document.getElementById('vaporRuleSequenceSelect');
+      if (sequenceSelect) {{
+        const current = sequenceSelect.value;
+        sequenceSelect.innerHTML = sequences.map(item => `<option value="${{item.id}}">${{item.name}} (${{item.step_count}} pasos)</option>`).join('');
+        sequenceSelect.value = current || sequence.sequence_id || sequence.active_sequence_id || '';
       }}
 
       const status = document.getElementById('vaporAutomationStatus');
@@ -4338,6 +4667,7 @@ def index():
           <div style="margin-bottom:12px; padding-bottom:12px; border-bottom:1px solid rgba(22,50,74,0.08);">
             <strong><span class="dot ${{activeRuleIds.has(String(rule.id)) ? 'online' : 'offline'}}"></span>${{rule.name}}</strong><br>
             Sensor: ${{rule.device_id}} / ${{rule.metric_id}}<br>
+            Secuencia: ${{sequences.find(item => item.id === rule.sequence_id)?.name || 'Secuencia activa'}}<br>
             Rango: ${{rule.min_value ?? '--'}} a ${{rule.max_value ?? '--'}} | Cambio mínimo: ${{rule.min_delta}} | Cooldown: ${{rule.cooldown_sec}}s<br>
             Estado: ${{activeRuleIds.has(String(rule.id)) ? 'En rango' : (rule.enabled ? 'En espera' : 'Parada')}}<br>
             <button onclick="removeVaporAutomationRule('${{rule.id}}')">Borrar</button>
@@ -4361,6 +4691,7 @@ def index():
         name: document.getElementById('vaporRuleName')?.value || `${{metric.device_id}} / ${{metric.metric_id}}`,
         device_id: metric.device_id,
         metric_id: metric.metric_id,
+        sequence_id: document.getElementById('vaporRuleSequenceSelect')?.value || currentVaporSequenceId() || null,
         min_value: document.getElementById('vaporRuleMinValue')?.value || null,
         max_value: document.getElementById('vaporRuleMaxValue')?.value || null,
         min_delta: document.getElementById('vaporRuleMinDelta')?.value || 0,
@@ -4407,6 +4738,36 @@ def index():
       }} finally {{
         fanBusy = false;
         renderFanState(fanState);
+      }}
+    }}
+
+    async function loadSmokeState() {{
+      try {{
+        const res = await fetch('/api/smoke/state', {{ cache: 'no-store' }});
+        const data = await res.json();
+        renderSmokeState(data);
+      }} catch (error) {{
+        renderSmokeState({{ configured: true, online: false, relay_on: false, reason: 'fetch_failed' }});
+      }}
+    }}
+
+    async function toggleSmoke() {{
+      if (!smokeState || !smokeState.configured || !smokeState.online || smokeBusy) {{
+        return;
+      }}
+      smokeBusy = true;
+      renderSmokeState(smokeState);
+      try {{
+        const form = new FormData();
+        form.append('enabled', smokeState.relay_on ? 'false' : 'true');
+        const res = await fetch('/api/smoke/set', {{ method: 'POST', body: form }});
+        const data = await res.json();
+        renderSmokeState(data);
+      }} catch (error) {{
+        renderSmokeState({{ configured: true, online: false, relay_on: false, reason: 'toggle_failed' }});
+      }} finally {{
+        smokeBusy = false;
+        renderSmokeState(smokeState);
       }}
     }}
 
@@ -5604,13 +5965,15 @@ async function renderForecast(data) {{
     renderDashGps({{}});
     renderVaporState({{ configured: false, online: false, relay_on: false }});
     renderFanState({{ configured: false, online: false, relay_on: false }});
-    renderVaporSequenceState({{ recording: false, playing: false, step_count: 0, duration_sec: 0, initial: {{ vapor: false, fan: false }}, steps: [] }});
+    renderSmokeState({{ configured: false, online: false, relay_on: false }});
+    renderVaporSequenceState({{ recording: false, playing: false, step_count: 0, duration_sec: 0, initial: {{ vapor: false, fan: false, smoke: false }}, steps: [], sequences: [] }});
     renderVaporAutomationState({{ config: {{ rules: [] }}, metrics: [], engine: {{ running: false, active_rule_ids: [] }}, sequence: {{ step_count: 0 }} }});
     renderFxState({{ config: {{ text_color_mode: 'auto' }}, presets: [] }});
     renderWindCalibrationState(null);
     loadLatest();
     loadVaporState();
     loadFanState();
+    loadSmokeState();
     loadVaporSequenceState();
     loadVaporAutomationState();
     loadFxState();

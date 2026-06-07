@@ -100,3 +100,9 @@ fan:
   token: ""
   request_timeout_sec: 4
   poll_interval_sec: 5
+smoke:
+  enabled: true
+  base_url: http://192.168.1.112
+  token: "666999"
+  request_timeout_sec: 4
+  poll_interval_sec: 5
