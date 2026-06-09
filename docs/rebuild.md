@@ -175,6 +175,12 @@
   - `https://www.rotor-studio.net/nubemovil/cloud_frame.php`
 - Public branded entry currently used:
   - `https://www.rotor-studio.net/nubemovil/nubemovil.php`
+- Public receiver behavior:
+  - stores the latest JPG plus a rolling buffer of the last `30` uploaded frames
+  - when fresh uploads stop, the public page replays those buffered frames instead of freezing on the last image
+  - the fallback is not signaled explicitly in the UI
+  - the top brand block and `ROTOR-STUDIO.net 2026` link to:
+    - `https://www.rotor-studio.net/v3/2026/nube-movil-es/`
 
 ## Local 24h Interpretation
 - Phrase selection depends on the current logical state and a state-derived seed.
@@ -263,6 +269,10 @@
 ## Validation Checklist
 - `systemctl is-active rotor-web rotor-collector rotor-camera`
 - `curl http://127.0.0.1:8000/api/sound/state`
+ - verify sound rule modes:
+   - `once` fires once per entry/change
+   - `loop` stays continuous while in range
+   - `interval` leaves silence between plays and repeats on `cooldown`
  - `curl http://127.0.0.1:8000/api/vapor/sequence`
  - `curl http://127.0.0.1:8000/api/vapor/automation`
  - `curl http://127.0.0.1:8000/api/smoke/state`

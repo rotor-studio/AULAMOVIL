@@ -2096,6 +2096,9 @@ def normalize_sound_rule(raw):
     stop_rule_id = str(raw.get("stop_rule_id") or "").strip() or None
     if stop_rule_id == rid:
         stop_rule_id = None
+    mode = str(raw.get("mode") or "once").strip().lower()
+    if mode not in {"once", "loop", "interval"}:
+        mode = "once"
     volume_pct = max(0, min(100, int(round(float(raw.get("volume_pct") or 100)))))
     return {
         "id": rid,
@@ -2103,7 +2106,7 @@ def normalize_sound_rule(raw):
         "device_id": raw.get("device_id") or "",
         "metric_id": raw.get("metric_id") or "",
         "sound_file": raw.get("sound_file") or "",
-        "mode": raw.get("mode") or "once",
+        "mode": mode,
         "min_value": raw.get("min_value"),
         "max_value": raw.get("max_value"),
         "min_delta": float(raw.get("min_delta") or 0.0),
@@ -2814,12 +2817,15 @@ class SoundEngine:
                 try_trigger = in_range and changed and (now - state["last_trigger_ts"] >= cooldown)
 
                 if mode == "loop" and not is_chirp:
-                    if in_range and not is_current:
+                    if muted:
+                        if is_current:
+                            self.stop_rule_sound(rule["id"])
+                        state["active"] = False
+                    elif in_range and not is_current and (now - state["last_trigger_ts"] >= cooldown):
                         try:
                             if stop_rule_id:
                                 self.stop_rule_sound(stop_rule_id)
-                            if not muted:
-                                self.play_file(sound_file, loop=True, rule_id=rule["id"], gain=gain)
+                            self.play_file(sound_file, loop=True, rule_id=rule["id"], gain=gain)
                             state["last_trigger_ts"] = now
                             state["active"] = True
                         except Exception:
@@ -2828,6 +2834,26 @@ class SoundEngine:
                         self.stop_rule_sound(rule["id"])
                         state["active"] = False
                     elif not in_range:
+                        state["active"] = False
+                elif mode == "interval":
+                    if muted:
+                        if is_current:
+                            self.stop_rule_sound(rule["id"])
+                        state["active"] = False
+                    elif in_range and not is_current and (now - state["last_trigger_ts"] >= cooldown):
+                        try:
+                            if stop_rule_id:
+                                self.stop_rule_sound(stop_rule_id)
+                            self.play_file(sound_file, loop=False, rule_id=rule["id"], gain=gain)
+                            state["last_trigger_ts"] = now
+                            state["active"] = True
+                        except Exception:
+                            pass
+                    elif not in_range:
+                        if is_current:
+                            self.stop_rule_sound(rule["id"])
+                        state["active"] = False
+                    elif now - state["last_trigger_ts"] >= cooldown:
                         state["active"] = False
                 else:
                     if try_trigger and not state["active"]:
@@ -4269,6 +4295,7 @@ def index():
           <select id=\"soundModeSelect\">
             <option value=\"once\">Una vez</option>
             <option value=\"loop\">Loop</option>
+            <option value=\"interval\">Intervalo</option>
           </select>
         </label>
         <label>Min valor: <input id=\"soundMinValue\" type=\"number\" step=\"any\" /></label>
@@ -4284,7 +4311,7 @@ def index():
         <label><input id=\"soundRuleMuted\" type=\"checkbox\" /> Mute</label>
         <button onclick=\"addSoundRule()\">Añadir regla</button>
       </div>
-      <div style=\"margin-top:8px; opacity:0.85;\">Una regla se dispara cuando el sensor entra en rango y cambia al menos el valor indicado.</div>
+      <div style=\"margin-top:8px; opacity:0.85;\">Una vez: dispara al entrar y con cambio. Loop: suena continuo mientras siga en rango. Intervalo: reproduce una vez cada cooldown mientras siga en rango.</div>
     </div>
 
     <div class=\"card\">
@@ -5867,6 +5894,11 @@ async function renderForecast(data) {{
       const metrics = payload.metrics || [];
       const sounds = payload.sounds || [];
       const rules = config.rules || [];
+      const modeLabels = {{
+        once: 'Una vez',
+        loop: 'Loop',
+        interval: 'Intervalo',
+      }};
       const activeRuleIds = new Set((engine.active_rule_ids || []).map(String));
       const outputDevice = config.output_device || '';
       const outputLabel = outputDevice.includes('CD002') ? 'USB' : (outputDevice.includes('Headphones') ? 'Jack' : (outputDevice || '--'));
@@ -5944,7 +5976,7 @@ async function renderForecast(data) {{
           <div style="margin-bottom:12px; padding-bottom:12px; border-bottom:1px solid rgba(22,50,74,0.08);">
             <strong><span class="dot ${{activeRuleIds.has(String(rule.id)) ? 'online' : 'offline'}}"></span>${{rule.name}}</strong><br>
             Sensor: ${{rule.device_id}} / ${{rule.metric_id}}<br>
-            Sonido: ${{rule.sound_file}} | Modo: ${{rule.mode}}<br>
+            Sonido: ${{rule.sound_file}} | Modo: ${{modeLabels[rule.mode] || rule.mode}}<br>
             Estado: ${{activeRuleIds.has(String(rule.id)) ? 'Disparando' : (rule.enabled ? 'En espera' : 'Parada')}}${{rule.muted ? ' | Muted' : ''}}<br>
             Rango: ${{rule.min_value ?? '--'}} a ${{rule.max_value ?? '--'}} | Cambio mínimo: ${{rule.min_delta}} | Cooldown: ${{rule.cooldown_sec}}s | Volumen: ${{rule.volume_pct ?? 100}}%<br>
             Apaga: ${{rule.stop_rule_id ? escapeHtml((rules.find(item => String(item.id) === String(rule.stop_rule_id)) || {{}}).name || rule.stop_rule_id) : 'Ninguna'}}<br>
