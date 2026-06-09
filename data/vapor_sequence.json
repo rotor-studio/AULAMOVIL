@@ -1,6 +1,6 @@
 {
   "version": 2,
-  "active_sequence_id": "default",
+  "active_sequence_id": "97cd8c4f24654c7d95efec7106957f7e",
   "sequences": [
     {
       "id": "default",
@@ -87,6 +87,81 @@
       "updated_at": "2026-06-02T17:28:42.901081+00:00",
       "last_played_at": "2026-06-03T14:46:59.587547+00:00",
       "version": 1
+    },
+    {
+      "id": "97cd8c4f24654c7d95efec7106957f7e",
+      "name": "Secuencia 2",
+      "initial": {
+        "vapor": false,
+        "fan": false,
+        "smoke": false
+      },
+      "steps": [
+        {
+          "actuator": "smoke",
+          "enabled": true,
+          "at_ms": 3728
+        },
+        {
+          "actuator": "fan",
+          "enabled": true,
+          "at_ms": 15310
+        },
+        {
+          "actuator": "fan",
+          "enabled": false,
+          "at_ms": 20093
+        },
+        {
+          "actuator": "fan",
+          "enabled": true,
+          "at_ms": 36685
+        },
+        {
+          "actuator": "fan",
+          "enabled": false,
+          "at_ms": 42258
+        },
+        {
+          "actuator": "fan",
+          "enabled": true,
+          "at_ms": 45507
+        },
+        {
+          "actuator": "fan",
+          "enabled": false,
+          "at_ms": 52725
+        },
+        {
+          "actuator": "fan",
+          "enabled": true,
+          "at_ms": 57789
+        },
+        {
+          "actuator": "fan",
+          "enabled": false,
+          "at_ms": 64762
+        },
+        {
+          "actuator": "fan",
+          "enabled": true,
+          "at_ms": 70192
+        },
+        {
+          "actuator": "fan",
+          "enabled": false,
+          "at_ms": 89138
+        },
+        {
+          "actuator": "smoke",
+          "enabled": false,
+          "at_ms": 92094
+        }
+      ],
+      "duration_sec": 92.094,
+      "created_at": "2026-06-08T11:28:02.449487+00:00",
+      "updated_at": "2026-06-08T11:29:42.810588+00:00",
+      "last_played_at": "2026-06-08T12:01:37.413325+00:00"
     }
   ]
 }

@@ -23,7 +23,7 @@ from datetime import datetime, timezone
 
 import yaml
 from fastapi import FastAPI, File, Form, HTTPException, Query, Request, UploadFile
-from fastapi.responses import HTMLResponse, StreamingResponse
+from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 
@@ -138,6 +138,7 @@ WIND_CALIBRATION_PATH = "/opt/rotor-meteo/data/wind_calibration.json"
 RAIN_WINDOW_CONFIG_PATH = "/opt/rotor-meteo/data/rain_window_config.json"
 VAPOR_SEQUENCE_PATH = "/opt/rotor-meteo/data/vapor_sequence.json"
 VAPOR_AUTOMATION_CONFIG_PATH = "/opt/rotor-meteo/data/vapor_automation.json"
+EXPORT_DIR = "/opt/rotor-meteo/data/exports"
 INTERPRETATION_MESSAGES_PATH = CONFIG.get("interpretation", {}).get(
     "messages_csv",
     "/opt/rotor-meteo/data/messages/refranes_meteorologicos_asturias.csv",
@@ -198,6 +199,18 @@ timelapse_lock = threading.Lock()
 timelapse_thread = None
 timelapse_stop = threading.Event()
 timelapse_interval = 60
+export_lock = threading.Lock()
+export_thread = None
+export_stop = threading.Event()
+export_interval = 5
+export_runtime = {
+    "running": False,
+    "started_at": None,
+    "last_capture_at": None,
+    "current_filename": None,
+    "rows_written": 0,
+    "columns": [],
+}
 
 # Optional human-friendly overrides
 LABEL_OVERRIDES = {
@@ -259,6 +272,234 @@ def build_hls_url():
 
 def ensure_timelapse_dir():
     os.makedirs(TIMELAPSE_DIR, exist_ok=True)
+
+
+def ensure_export_dir():
+    os.makedirs(EXPORT_DIR, exist_ok=True)
+
+
+EXPORT_EXCLUDED_METRICS = {
+    ("bme280_local", "pressure_hpa"),
+    ("gps_usb_1", "gps_lat"),
+    ("gps_usb_1", "gps_lon"),
+    ("gps_usb_1", "gps_alt"),
+    ("rain_node_mcu", "rain_last_tip_ms"),
+    ("rain_node_mcu", "rain_since_last_tip_ms"),
+    ("wind_esp8266", "wind_speed_raw"),
+    ("wind_esp8266", "wind_speed_ma"),
+    ("wind_esp8266", "wind_direction_raw"),
+    ("wind_esp8266", "wind_direction_ma"),
+    ("wind_esp8266", "wind_raw"),
+    ("wind_esp8266", "wind_voltage_v"),
+    ("wind_esp8266", "wind_current_ma"),
+    ("light_mcu", "uv_voltage_v"),
+}
+
+
+def export_metric_allowed(device_id, metric_id):
+    return (str(device_id), str(metric_id)) not in EXPORT_EXCLUDED_METRICS
+
+
+def export_metric_specs():
+    specs = []
+    seen = set()
+    for device_id, device in (REGISTRY.get("devices") or {}).items():
+        for metric_id in (device.get("metrics") or []):
+            key = (str(device_id), str(metric_id))
+            if not export_metric_allowed(*key):
+                continue
+            if key in seen:
+                continue
+            seen.add(key)
+            specs.append(key)
+
+    latest = get_latest_map()
+    for key, item in sorted(latest.items()):
+        device_id = str(item.get("device_id") or "")
+        metric_id = str(item.get("metric_id") or "")
+        pair = (device_id, metric_id)
+        if not export_metric_allowed(*pair):
+            continue
+        if pair in seen:
+            continue
+        seen.add(pair)
+        specs.append(pair)
+    return specs
+
+
+def export_header(specs):
+    fields = [
+        "captured_at_iso",
+        "captured_at_epoch",
+        "location",
+        "gps_lat",
+        "gps_lon",
+        "gps_alt",
+    ]
+    for device_id, metric_id in specs:
+        fields.append(f"{device_id}__{metric_id}")
+    return fields
+
+
+EXPORT_LAST_READING_FALLBACKS = {
+    ("sensor_community_1", "pm10_ugm3"),
+    ("sensor_community_1", "pm2_5_ugm3"),
+    ("sensor_community_1", "temp_c"),
+    ("sensor_community_1", "rh_pct"),
+    ("sensor_community_1", "pressure_hpa"),
+}
+
+
+def export_metric_value(latest, device_id, metric_id, fallback_cache=None):
+    item = latest.get(f"{device_id}/{metric_id}")
+    if item:
+        return item.get("value")
+    key = (str(device_id), str(metric_id))
+    if key not in EXPORT_LAST_READING_FALLBACKS:
+        return ""
+    cache = fallback_cache if fallback_cache is not None else {}
+    if key not in cache:
+        cache[key] = get_last_reading(metric_id, device_id)
+    row = cache.get(key)
+    return row.get("value") if row else ""
+
+
+def build_export_row(specs, latest):
+    captured_at = datetime.now(timezone.utc)
+    gps_lat = get_metric(latest, "gps_lat", "gps_usb_1") or get_metric(latest, "gps_lat")
+    gps_lon = get_metric(latest, "gps_lon", "gps_usb_1") or get_metric(latest, "gps_lon")
+    gps_alt = get_metric(latest, "gps_alt", "gps_usb_1") or get_metric(latest, "gps_alt")
+    lat_value = gps_lat.get("value") if gps_lat else ""
+    lon_value = gps_lon.get("value") if gps_lon else ""
+    alt_value = gps_alt.get("value") if gps_alt else ""
+    location = ""
+    if lat_value != "" and lon_value != "":
+        location = f"{lat_value}, {lon_value}"
+
+    row = {
+        "captured_at_iso": captured_at.isoformat(),
+        "captured_at_epoch": round(captured_at.timestamp(), 3),
+        "location": location,
+        "gps_lat": lat_value,
+        "gps_lon": lon_value,
+        "gps_alt": alt_value,
+    }
+    fallback_cache = {}
+    for device_id, metric_id in specs:
+        row[f"{device_id}__{metric_id}"] = export_metric_value(latest, device_id, metric_id, fallback_cache)
+    return row
+
+
+def export_loop(file_path, specs, fieldnames):
+    global export_interval
+    try:
+        with open(file_path, "w", encoding="utf-8", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=fieldnames)
+            writer.writeheader()
+            f.flush()
+            while not export_stop.is_set():
+                latest = get_latest_map()
+                row = build_export_row(specs, latest)
+                writer.writerow(row)
+                f.flush()
+                with export_lock:
+                    export_runtime["rows_written"] += 1
+                    export_runtime["last_capture_at"] = row["captured_at_iso"]
+                export_stop.wait(export_interval)
+    finally:
+        with export_lock:
+            export_runtime["running"] = False
+
+
+def export_running():
+    return export_thread is not None and export_thread.is_alive()
+
+
+def list_export_files(limit=20):
+    ensure_export_dir()
+    items = []
+    for name in sorted(os.listdir(EXPORT_DIR), reverse=True):
+        if not name.lower().endswith(".csv"):
+            continue
+        path = os.path.join(EXPORT_DIR, name)
+        if not os.path.isfile(path):
+            continue
+        stat = os.stat(path)
+        items.append({
+            "filename": name,
+            "size_bytes": stat.st_size,
+            "updated_at": datetime.fromtimestamp(stat.st_mtime, timezone.utc).isoformat(),
+            "download_url": f"/api/export/download/{urllib.parse.quote(name)}",
+            "delete_url": f"/api/export/files/{urllib.parse.quote(name)}",
+        })
+        if len(items) >= limit:
+            break
+    return items
+
+
+def export_status():
+    with export_lock:
+        running = bool(export_runtime.get("running"))
+        started_at = export_runtime.get("started_at")
+        last_capture_at = export_runtime.get("last_capture_at")
+        current_filename = export_runtime.get("current_filename")
+        rows_written = int(export_runtime.get("rows_written") or 0)
+        columns = list(export_runtime.get("columns") or [])
+    return {
+        "ok": True,
+        "running": running,
+        "interval_sec": int(export_interval),
+        "started_at": started_at,
+        "last_capture_at": last_capture_at,
+        "current_filename": current_filename,
+        "rows_written": rows_written,
+        "column_count": len(columns),
+        "columns": columns,
+        "current_download_url": f"/api/export/download/{urllib.parse.quote(current_filename)}" if current_filename else None,
+        "files": list_export_files(),
+    }
+
+
+def start_export_recording(interval_sec: int):
+    global export_thread, export_interval
+    ensure_export_dir()
+    thread = None
+    with export_lock:
+        thread = export_thread if export_running() else None
+    if thread and thread.is_alive():
+        export_stop.set()
+        thread.join(timeout=2)
+    with export_lock:
+        export_interval = max(1, int(interval_sec))
+        export_stop.clear()
+        specs = export_metric_specs()
+        fieldnames = export_header(specs)
+        filename = f"meteo_export_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+        export_runtime["running"] = True
+        export_runtime["started_at"] = datetime.now(timezone.utc).isoformat()
+        export_runtime["last_capture_at"] = None
+        export_runtime["current_filename"] = filename
+        export_runtime["rows_written"] = 0
+        export_runtime["columns"] = list(fieldnames)
+        file_path = os.path.join(EXPORT_DIR, filename)
+        export_thread = threading.Thread(
+            target=export_loop,
+            args=(file_path, specs, fieldnames),
+            daemon=True,
+        )
+        export_thread.start()
+    return export_status()
+
+
+def stop_export_recording():
+    global export_thread
+    export_stop.set()
+    thread = export_thread
+    if thread and thread.is_alive():
+        thread.join(timeout=2)
+    with export_lock:
+        export_runtime["running"] = False
+    return export_status()
 
 
 def capture_timelapse_frame():
@@ -3313,16 +3554,21 @@ def api_sound_delete_rule(rule_id: str):
 
 
 @app.get("/api/stream")
-def api_stream():
+def api_stream(request: Request):
     async def event_stream():
         last_hash = None
-        while True:
-            payload = json.dumps(list(get_latest_map().values()), separators=(",", ":"))
-            h = hash(payload)
-            if h != last_hash:
-                last_hash = h
-                yield f"data: {payload}\n\n"
-            await asyncio.sleep(SSE_INTERVAL)
+        try:
+            while True:
+                if await request.is_disconnected():
+                    break
+                payload = json.dumps(list(get_latest_map().values()), separators=(",", ":"))
+                h = hash(payload)
+                if h != last_hash:
+                    last_hash = h
+                    yield f"data: {payload}\n\n"
+                await asyncio.sleep(SSE_INTERVAL)
+        except asyncio.CancelledError:
+            return
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")
 
@@ -3393,9 +3639,62 @@ def api_timelapse_gif(interval_sec: float = Query(1.0)):
     return {"ok": True, "filename": name}
 
 
+@app.get("/api/export/status")
+def api_export_status():
+    return export_status()
+
+
+@app.post("/api/export/start")
+def api_export_start(interval_sec: int = Form(...)):
+    return start_export_recording(interval_sec)
+
+
+@app.get("/api/export/start")
+def api_export_start_get(interval_sec: int = Query(5)):
+    return start_export_recording(interval_sec)
+
+
+@app.post("/api/export/stop")
+def api_export_stop():
+    return stop_export_recording()
+
+
+@app.get("/api/export/stop")
+def api_export_stop_get():
+    return stop_export_recording()
+
+
+@app.get("/api/export/files")
+def api_export_files():
+    return {"items": list_export_files()}
+
+
+@app.delete("/api/export/files/{filename}")
+def api_export_delete(filename: str):
+    safe_name = os.path.basename(filename)
+    path = os.path.join(EXPORT_DIR, safe_name)
+    if not os.path.isfile(path):
+        raise HTTPException(status_code=404, detail="export_not_found")
+    current_filename = export_runtime.get("current_filename")
+    if export_running() and current_filename == safe_name:
+        raise HTTPException(status_code=409, detail="export_in_progress")
+    os.remove(path)
+    return {"ok": True, "filename": safe_name, "items": list_export_files()}
+
+
+@app.get("/api/export/download/{filename}")
+def api_export_download(filename: str):
+    safe_name = os.path.basename(filename)
+    path = os.path.join(EXPORT_DIR, safe_name)
+    if not os.path.isfile(path):
+        raise HTTPException(status_code=404, detail="export_not_found")
+    return FileResponse(path, media_type="text/csv", filename=safe_name)
+
+
 @app.on_event("startup")
 def startup():
     ensure_interpretation_history_table()
+    ensure_export_dir()
     sound_engine.start()
     vapor_automation_engine.start()
 
@@ -3588,6 +3887,7 @@ def index():
     <div class=\"tab\" data-tab=\"vapor\">Vapor</div>
     <div class=\"tab\" data-tab=\"fx\">FX</div>
     <div class=\"tab\" data-tab=\"sound\">Sonido</div>
+    <div class=\"tab\" data-tab=\"export\">Exportar</div>
     <div class=\"tab\" data-tab=\"forecast\">Interpretación 24h</div>
   </div>
 
@@ -3929,6 +4229,30 @@ def index():
     </div>
   </div>
 
+  <div id=\"export\" class=\"panel\">
+    <h2>Exportar datos</h2>
+    <div class=\"card\">
+      <h3>Grabación de recorrido</h3>
+      <div id=\"exportStatus\" style=\"opacity:0.9;\">Estado: parada.</div>
+      <div id=\"exportCurrentFile\" style=\"margin-top:8px; opacity:0.85;\">Archivo actual: --</div>
+      <div id=\"exportRows\" style=\"margin-top:6px; opacity:0.85;\">Filas: 0</div>
+      <div id=\"exportColumns\" style=\"margin-top:6px; opacity:0.85;\">Columnas: --</div>
+      <div id=\"exportLastCapture\" style=\"margin-top:6px; opacity:0.85;\">Última captura: --</div>
+      <div class=\"timelapse-actions\" style=\"margin-top:12px;\">
+        <label>Intervalo (seg): <input id=\"exportInterval\" type=\"number\" min=\"1\" value=\"5\" /></label>
+        <button onclick=\"startExportRecording()\">Grabar</button>
+        <button onclick=\"stopExportRecording()\">Parar</button>
+        <a id=\"exportDownloadCurrent\" class=\"mono\" target=\"_blank\" rel=\"noopener\"></a>
+      </div>
+      <p style=\"opacity:0.8; margin-top:10px;\">Cada captura guarda todas las métricas actuales y la posición GPS en una fila CSV.</p>
+    </div>
+
+    <div class=\"card\">
+      <h3>Archivos CSV</h3>
+      <div id=\"exportFilesList\">Sin exportaciones todavía.</div>
+    </div>
+  </div>
+
   <div id=\"camera\" class=\"panel\">
     <h2>Cámara (Live)</h2>
     <div class=\"status-line\">Estado: <span id=\"cameraStatus\" class=\"dot offline\"></span><span id=\"cameraStatusText\">Offline</span></div>
@@ -4137,6 +4461,7 @@ def index():
     let smokeBusy = false;
     let vaporSequenceState = null;
     let fxState = null;
+    let exportState = null;
     let windCalibration = {{ calibration: {{ offset_deg: 0.0, east_reference_deg: null, updated_at: null }} }};
 
     function normalizeWindDeg(deg) {{
@@ -4768,6 +5093,137 @@ def index():
       }} finally {{
         smokeBusy = false;
         renderSmokeState(smokeState);
+      }}
+    }}
+
+    function escapeHtml(value) {{
+      return String(value ?? '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+    }}
+
+    function renderExportState(payload) {{
+      exportState = payload || {{}};
+      const statusEl = document.getElementById('exportStatus');
+      const currentFileEl = document.getElementById('exportCurrentFile');
+      const rowsEl = document.getElementById('exportRows');
+      const columnsEl = document.getElementById('exportColumns');
+      const lastCaptureEl = document.getElementById('exportLastCapture');
+      const downloadEl = document.getElementById('exportDownloadCurrent');
+      const filesEl = document.getElementById('exportFilesList');
+      const intervalEl = document.getElementById('exportInterval');
+
+      const running = !!exportState.running;
+      const startedAt = exportState.started_at ? new Date(exportState.started_at).toLocaleString() : '--';
+      const lastCapture = exportState.last_capture_at ? new Date(exportState.last_capture_at).toLocaleString() : '--';
+
+      if (statusEl) {{
+        statusEl.textContent = running
+          ? `Estado: grabando cada ${{exportState.interval_sec || 0}} s desde ${{startedAt}}.`
+          : 'Estado: parada.';
+      }}
+      if (currentFileEl) currentFileEl.textContent = `Archivo actual: ${{exportState.current_filename || '--'}}`;
+      if (rowsEl) rowsEl.textContent = `Filas: ${{Number(exportState.rows_written || 0)}}`;
+      if (columnsEl) columnsEl.textContent = `Columnas: ${{Number(exportState.column_count || 0)}}`;
+      if (lastCaptureEl) lastCaptureEl.textContent = `Última captura: ${{lastCapture}}`;
+      if (intervalEl && exportState.interval_sec) intervalEl.value = String(exportState.interval_sec);
+      if (downloadEl) {{
+        if (exportState.current_download_url) {{
+          downloadEl.href = exportState.current_download_url;
+          downloadEl.textContent = 'Descargar actual';
+          downloadEl.style.display = 'inline-block';
+        }} else {{
+          downloadEl.removeAttribute('href');
+          downloadEl.textContent = '';
+          downloadEl.style.display = 'none';
+        }}
+      }}
+      if (filesEl) {{
+        const files = Array.isArray(exportState.files) ? exportState.files : [];
+        if (!files.length) {{
+          filesEl.textContent = 'Sin exportaciones todavía.';
+        }} else {{
+          filesEl.innerHTML = files.map(item => {{
+            const ts = item.updated_at ? new Date(item.updated_at).toLocaleString() : '--';
+            const kb = (Number(item.size_bytes || 0) / 1024).toFixed(1);
+            return `
+              <div style="margin-bottom:10px; padding-bottom:10px; border-bottom:1px solid rgba(22,50,74,0.08);">
+                <strong>${{escapeHtml(item.filename)}}</strong><br>
+                Tamaño: ${{kb}} KB | Actualizado: ${{escapeHtml(ts)}}<br>
+                <a class="mono" href="${{item.download_url}}" target="_blank" rel="noopener">Descargar CSV</a>
+                <button style="margin-left:10px;" onclick="deleteExportFile('${{encodeURIComponent(item.filename)}}')">Borrar</button>
+              </div>
+            `;
+          }}).join('');
+        }}
+      }}
+    }}
+
+    async function loadExportState() {{
+      try {{
+        const res = await fetch('/api/export/status', {{ cache: 'no-store' }});
+        const data = await res.json();
+        renderExportState(data);
+      }} catch (_error) {{
+        renderExportState({{ running: false, files: [] }});
+      }}
+    }}
+
+    async function startExportRecording() {{
+      const statusEl = document.getElementById('exportStatus');
+      const intervalInput = document.getElementById('exportInterval');
+      const intervalSec = (intervalInput && intervalInput.value) ? intervalInput.value : '5';
+      if (statusEl) statusEl.textContent = `Estado: iniciando grabación cada ${{intervalSec}} s...`;
+      try {{
+        const params = new URLSearchParams();
+        params.set('interval_sec', intervalSec);
+        let res = await fetch('/api/export/start', {{
+          method: 'POST',
+          headers: {{ 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8' }},
+          body: params.toString(),
+        }});
+        if (!res.ok) {{
+          res = await fetch(`/api/export/start?interval_sec=${{encodeURIComponent(intervalSec)}}`, {{ cache: 'no-store' }});
+        }}
+        const data = await res.json();
+        renderExportState(data);
+      }} catch (error) {{
+        if (statusEl) statusEl.textContent = `Estado: error al iniciar (${{error}}).`;
+      }}
+    }}
+
+    async function stopExportRecording() {{
+      const statusEl = document.getElementById('exportStatus');
+      if (statusEl) statusEl.textContent = 'Estado: deteniendo grabación...';
+      try {{
+        let res = await fetch('/api/export/stop', {{ method: 'POST' }});
+        if (!res.ok) {{
+          res = await fetch('/api/export/stop', {{ cache: 'no-store' }});
+        }}
+        const data = await res.json();
+        renderExportState(data);
+      }} catch (error) {{
+        if (statusEl) statusEl.textContent = `Estado: error al parar (${{error}}).`;
+      }}
+    }}
+
+    async function deleteExportFile(encodedFilename) {{
+      const statusEl = document.getElementById('exportStatus');
+      if (!encodedFilename) return;
+      try {{
+        const res = await fetch(`/api/export/files/${{encodedFilename}}`, {{ method: 'DELETE' }});
+        const data = await res.json();
+        if (!res.ok) {{
+          throw new Error(data?.detail || 'delete_failed');
+        }}
+        if (statusEl) statusEl.textContent = 'Estado: archivo borrado.';
+        renderExportState({{ ...(exportState || {{}}), files: Array.isArray(data.items) ? data.items : [] }});
+        await loadExportState();
+      }} catch (error) {{
+        if (statusEl) statusEl.textContent = `Estado: error al borrar (${{error}}).`;
       }}
     }}
 
@@ -5969,6 +6425,7 @@ async function renderForecast(data) {{
     renderVaporSequenceState({{ recording: false, playing: false, step_count: 0, duration_sec: 0, initial: {{ vapor: false, fan: false, smoke: false }}, steps: [], sequences: [] }});
     renderVaporAutomationState({{ config: {{ rules: [] }}, metrics: [], engine: {{ running: false, active_rule_ids: [] }}, sequence: {{ step_count: 0 }} }});
     renderFxState({{ config: {{ text_color_mode: 'auto' }}, presets: [] }});
+    renderExportState({{ running: false, files: [] }});
     renderWindCalibrationState(null);
     loadLatest();
     loadVaporState();
@@ -5977,6 +6434,7 @@ async function renderForecast(data) {{
     loadVaporSequenceState();
     loadVaporAutomationState();
     loadFxState();
+    loadExportState();
     loadWindCalibration();
     const activePanel = document.querySelector('.panel.active');
     if (activePanel) {{
@@ -5987,6 +6445,7 @@ async function renderForecast(data) {{
     setInterval(loadVaporSequenceState, 1000);
     setInterval(loadVaporAutomationState, 5000);
     setInterval(loadFxState, 10000);
+    setInterval(loadExportState, 5000);
     setInterval(loadWindCalibration, 10000);
   </script>
 </body>
