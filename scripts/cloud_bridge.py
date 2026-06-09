@@ -170,23 +170,17 @@ def build_display(sign_state):
 
 
 def build_web_display(sign_state):
-    interpretation = sign_state.get("interpretation") if isinstance(sign_state, dict) else {}
-    if not isinstance(interpretation, dict):
-        interpretation = {}
-    message = interpretation.get("message")
-    state = interpretation.get("state")
-    if not isinstance(message, dict):
-        message = {}
-    if not isinstance(state, dict):
-        state = {}
-    phrase = str(message.get("phrase") or "").strip()
-    summary = str(state.get("summary") or "").strip()
-    if phrase:
-        return {
-            "headline": phrase,
-            "line1": "",
-            "line2": "",
-        }
+    web_display = sign_state.get("web_display") if isinstance(sign_state, dict) else {}
+    if isinstance(web_display, dict):
+        headline = str(web_display.get("headline") or "")
+        line1 = str(web_display.get("line1") or "")
+        line2 = str(web_display.get("line2") or "")
+        if headline or line1 or line2:
+            return {
+                "headline": headline,
+                "line1": line1,
+                "line2": line2,
+            }
     return build_display(sign_state)
 
 
