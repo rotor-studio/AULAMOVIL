@@ -147,6 +147,11 @@ Dashboard: http://<pi-ip>:8000/
 - GPS can remain stale even when `/dev/ttyACM0` is present if the receiver has no valid fix.
 - Sketches committed to git should keep placeholder Wi-Fi credentials and tokens.
 - The cloud bridge now publishes `TEMP PI` from `/api/pi/health`.
+- The public NUBEMOVIL page now keeps the last `30` uploaded frames in a rolling buffer on the receiver.
+- If the bridge goes offline, the public page replays those recent frames instead of freezing on the last JPG.
+- That fallback is intentionally silent in the UI; only the existing `Estado` remains visible.
+- The top brand block and `ROTOR-STUDIO.net 2026` now link to:
+  - `https://www.rotor-studio.net/v3/2026/nube-movil-es/`
 - The local 24h interpretation keeps a stable phrase for 180 seconds and can switch immediately when the state changes.
 - Sound tab now includes a volume slider for the active output.
 

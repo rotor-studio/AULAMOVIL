@@ -49,6 +49,11 @@
 - Current validated state:
   - the bridge publishes `TEMP PI` from `pi_health/temperature_c`
   - `display` stays for cartels while `web_display` is used by the public web entry
+  - the public receiver keeps a rolling buffer of the last `30` uploaded JPG frames
+  - if the bridge stops updating, the public web replays those buffered frames instead of freezing on the last one
+  - the public page does not expose that fallback explicitly; only the existing `Estado` remains visible
+  - the top brand block and `ROTOR-STUDIO.net 2026` link to:
+    - `https://www.rotor-studio.net/v3/2026/nube-movil-es/`
 - Main files:
   - `/movilcloud/public/index.php`
   - `/movilcloud/public/api/ingest.php`
