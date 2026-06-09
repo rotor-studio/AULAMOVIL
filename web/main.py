@@ -2940,6 +2940,11 @@ def compute_forecast_payload():
         "brightness": int(fx_config.get("brightness", 24)),
         "effect": fx_display["effect"],
     }
+    web_display_block = {
+        "headline": str(headline or ""),
+        "line1": str(line1 or ""),
+        "line2": str(line2 or ""),
+    }
 
     if fx_display["color_mode"] in FX_COLOR_PRESETS and FX_COLOR_PRESETS[fx_display["color_mode"]]:
         display_block["color"] = FX_COLOR_PRESETS[fx_display["color_mode"]]
@@ -2969,6 +2974,7 @@ def compute_forecast_payload():
             "applied": fx_display,
         },
         "display": display_block,
+        "web_display": web_display_block,
         "metrics": {
             "temp_c": float(temperature["value"]) if temperature else None,
             "rh_pct": float(humidity["value"]) if humidity else None,
