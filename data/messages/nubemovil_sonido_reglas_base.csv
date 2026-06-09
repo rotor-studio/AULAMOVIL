@@ -1,0 +1,63 @@
+device_id,metric_id,sensor_label,scenario_group,scenario_id,min_value,max_value,change_min,cooldown_sec,priority,suggested_sound,suggested_mode,notes
+sensor_community_1,temp_c,Temperatura ambiente,temperatura,temp_frio_intenso,-20,5,,180,80,ambiente_frio_denso,loop,Frio marcado
+sensor_community_1,temp_c,Temperatura ambiente,temperatura,temp_fresco,5,14,,180,60,ambiente_fresco_suave,loop,Fresco estable
+sensor_community_1,temp_c,Temperatura ambiente,temperatura,temp_templado,14,24,,180,40,ambiente_neutro_ligero,loop,Confort general
+sensor_community_1,temp_c,Temperatura ambiente,temperatura,temp_calido,24,30,,180,60,ambiente_calido_liviano,loop,Calor moderado
+sensor_community_1,temp_c,Temperatura ambiente,temperatura,temp_calor_fuerte,30,60,,120,85,ambiente_calor_tenso,loop,Calor alto
+sensor_community_1,rh_pct,Humedad ambiente,humedad,humedad_seca,0,40,,180,55,aire_seco_fino,loop,Ambiente seco
+sensor_community_1,rh_pct,Humedad ambiente,humedad,humedad_media,40,60,,180,35,ambiente_neutro_ligero,loop,Humedad cómoda
+sensor_community_1,rh_pct,Humedad ambiente,humedad,humedad_alta,60,80,,180,65,aire_humedo_sutil,loop,Ambiente cargado
+sensor_community_1,rh_pct,Humedad ambiente,humedad,humedad_muy_alta,80,100,,120,85,aire_humedo_denso,loop,Humedad muy alta
+sensor_community_1,pressure_hpa,Presión atmosférica,presion,presion_muy_baja,850,1000,,300,80,presion_baja_inestable,loop,Ambiente inestable
+sensor_community_1,pressure_hpa,Presión atmosférica,presion,presion_baja,1000,1012,,300,60,presion_baja_suave,loop,Presión baja
+sensor_community_1,pressure_hpa,Presión atmosférica,presion,presion_normal,1012,1020,,300,35,ambiente_neutro_ligero,loop,Presión media
+sensor_community_1,pressure_hpa,Presión atmosférica,presion,presion_alta,1020,1035,,300,60,presion_alta_clara,loop,Alta estabilidad
+sensor_community_1,pm2_5_ugm3,Partículas PM2.5,aire,pm25_bueno,0,12,,180,30,aire_limpio_sutil,loop,Aire limpio
+sensor_community_1,pm2_5_ugm3,Partículas PM2.5,aire,pm25_regular,12,35,,120,65,aire_cargado_medio,loop,Aire regular
+sensor_community_1,pm2_5_ugm3,Partículas PM2.5,aire,pm25_malo,35,55,,90,85,aire_cargado_tenso,loop,Aire cargado
+sensor_community_1,pm2_5_ugm3,Partículas PM2.5,aire,pm25_muy_malo,55,500,,60,95,aire_alarma_densa,loop,Contaminación alta
+sensor_community_1,pm10_ugm3,Partículas PM10,aire,pm10_bueno,0,20,,180,30,aire_limpio_sutil,loop,Aire limpio
+sensor_community_1,pm10_ugm3,Partículas PM10,aire,pm10_regular,20,50,,120,60,aire_cargado_medio,loop,Aire regular
+sensor_community_1,pm10_ugm3,Partículas PM10,aire,pm10_malo,50,100,,90,85,aire_cargado_tenso,loop,Aire cargado
+sensor_community_1,pm10_ugm3,Partículas PM10,aire,pm10_muy_malo,100,500,,60,95,aire_alarma_densa,loop,Contaminación alta
+light_mcu,light_lux,Luminosidad,luz,luz_noche,0,5,,240,70,noche_muy_sutil,loop,Oscuridad casi total
+light_mcu,light_lux,Luminosidad,luz,luz_baja,5,80,,240,55,interior_calmo,loop,Interior o cielo muy cubierto
+light_mcu,light_lux,Luminosidad,luz,luz_media,80,300,,240,35,ambiente_neutro_ligero,loop,Luz ambiente estable
+light_mcu,light_lux,Luminosidad,luz,luz_alta,300,1000,,180,55,luz_abierta_suave,loop,Exterior o entrada de luz clara
+light_mcu,light_lux,Luminosidad,luz,luz_muy_alta,1000,200000,,120,75,luz_fuerte_activa,loop,Luz intensa
+light_mcu,uv_raw,UV RAW,radiacion,uv_raw_bajo,0,330,,240,35,sol_suave_aereo,loop,Radiación baja
+light_mcu,uv_raw,UV RAW,radiacion,uv_raw_medio,330,360,,180,55,sol_presente_ligero,loop,Radiación media
+light_mcu,uv_raw,UV RAW,radiacion,uv_raw_alto,360,420,,120,75,sol_intenso_dinamico,loop,Radiación alta
+light_mcu,uv_raw,UV RAW,radiacion,uv_raw_muy_alto,420,1024,,90,90,sol_duro_tenso,loop,Radiación muy alta
+wind_esp8266,wind_speed_ms,Viento,viento,viento_calma,0,0.8,,180,25,calma_aire_fino,loop,Casi sin viento
+wind_esp8266,wind_speed_ms,Viento,viento,viento_brisa,0.8,3,,180,45,brisa_suave,loop,Brisa ligera
+wind_esp8266,wind_speed_ms,Viento,viento,viento_moderado,3,6,,120,65,viento_presente,loop,Viento perceptible
+wind_esp8266,wind_speed_ms,Viento,viento,viento_fuerte,6,10,,90,85,viento_fuerte_tenso,loop,Viento fuerte
+wind_esp8266,wind_speed_ms,Viento,viento,viento_muy_fuerte,10,50,,60,95,viento_alerta,loop,Rachas o vendaval
+wind_esp8266,wind_direction_deg,Dirección del viento,direccion,viento_norte,337.5,360,,300,20,viento_norte_frio,loop,Usar junto a velocidad
+wind_esp8266,wind_direction_deg,Dirección del viento,direccion,viento_norte_2,0,22.5,,300,20,viento_norte_frio,loop,Partición sector norte
+wind_esp8266,wind_direction_deg,Dirección del viento,direccion,viento_noreste,22.5,67.5,,300,20,viento_noreste_claro,loop,Usar junto a velocidad
+wind_esp8266,wind_direction_deg,Dirección del viento,direccion,viento_este,67.5,112.5,,300,20,viento_este_seco,loop,Usar junto a velocidad
+wind_esp8266,wind_direction_deg,Dirección del viento,direccion,viento_sureste,112.5,157.5,,300,20,viento_sureste_humedo,loop,Usar junto a velocidad
+wind_esp8266,wind_direction_deg,Dirección del viento,direccion,viento_sur,157.5,202.5,,300,20,viento_sur_templado,loop,Usar junto a velocidad
+wind_esp8266,wind_direction_deg,Dirección del viento,direccion,viento_suroeste,202.5,247.5,,300,20,viento_suroeste_maritimo,loop,Usar junto a velocidad
+wind_esp8266,wind_direction_deg,Dirección del viento,direccion,viento_oeste,247.5,292.5,,300,20,viento_oeste_abierto,loop,Usar junto a velocidad
+wind_esp8266,wind_direction_deg,Dirección del viento,direccion,viento_noroeste,292.5,337.5,,300,20,viento_noroeste_fresco,loop,Usar junto a velocidad
+rain_node_mcu,rain_rate_mmh,Lluvia actual,lluvia,lluvia_sin_evento,0,0.1,,180,15,ambiente_neutro_ligero,loop,Sin lluvia activa
+rain_node_mcu,rain_rate_mmh,Lluvia actual,lluvia,llovizna,0.1,1,,120,60,llovizna_fina,loop,Lluvia muy débil
+rain_node_mcu,rain_rate_mmh,Lluvia actual,lluvia,lluvia_suave,1,4,,120,75,lluvia_suave_continua,loop,Lluvia moderada
+rain_node_mcu,rain_rate_mmh,Lluvia actual,lluvia,lluvia_media,4,10,,90,85,lluvia_media,loop,Lluvia clara
+rain_node_mcu,rain_rate_mmh,Lluvia actual,lluvia,lluvia_fuerte,10,100,,60,95,lluvia_fuerte,loop,Aguacero
+rain_node_mcu,rain_mm_interval,Lluvia intervalo,lluvia_intervalo,acumulado_intervalo_bajo,0,0.5,,300,35,huella_lluvia_suave,once,Actividad reciente baja
+rain_node_mcu,rain_mm_interval,Lluvia intervalo,lluvia_intervalo,acumulado_intervalo_medio,0.5,2,,240,55,huella_lluvia_media,once,Actividad reciente media
+rain_node_mcu,rain_mm_interval,Lluvia intervalo,lluvia_intervalo,acumulado_intervalo_alto,2,20,,180,75,huella_lluvia_fuerte,once,Actividad reciente alta
+bme280_ground,temp_ground_c,Temperatura de suelo,suelo,temp_suelo_frio,0,10,,300,45,suelo_frio,loop,Suelo frío
+bme280_ground,temp_ground_c,Temperatura de suelo,suelo,temp_suelo_templado,10,24,,300,25,suelo_neutro,loop,Suelo estable
+bme280_ground,temp_ground_c,Temperatura de suelo,suelo,temp_suelo_calido,24,60,,240,55,suelo_calido,loop,Suelo caliente
+bme280_ground,rh_ground_pct,Humedad de suelo/sombra,suelo,hum_suelo_baja,0,45,,300,35,suelo_seco,loop,Suelo seco
+bme280_ground,rh_ground_pct,Humedad de suelo/sombra,suelo,hum_suelo_media,45,75,,300,20,suelo_neutro,loop,Suelo en equilibrio
+bme280_ground,rh_ground_pct,Humedad de suelo/sombra,suelo,hum_suelo_alta,75,100,,240,55,suelo_humedo,loop,Suelo muy húmedo
+gps_usb_1,gps_speed_kmh,GPS velocidad,movimiento,mov_parado,0,1,,300,20,movilidad_en_calma,loop,Si esta métrica existe
+gps_usb_1,gps_speed_kmh,GPS velocidad,movimiento,mov_lento,1,15,,180,35,movilidad_lenta,loop,Si esta métrica existe
+gps_usb_1,gps_speed_kmh,GPS velocidad,movimiento,mov_urbano,15,50,,120,55,movilidad_urbana,loop,Si esta métrica existe
+gps_usb_1,gps_speed_kmh,GPS velocidad,movimiento,mov_rapido,50,130,,90,75,movilidad_rapida,loop,Si esta métrica existe
