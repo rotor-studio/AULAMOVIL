@@ -66,7 +66,7 @@
       "cooldown_sec": 10.0,
       "enabled": true,
       "muted": false,
-      "volume_pct": 40,
+      "volume_pct": 65,
       "stop_rule_ids": [],
       "stop_rule_id": null
     },
@@ -100,7 +100,7 @@
       "cooldown_sec": 10.0,
       "enabled": true,
       "muted": false,
-      "volume_pct": 51,
+      "volume_pct": 25,
       "stop_rule_ids": [],
       "stop_rule_id": null
     },

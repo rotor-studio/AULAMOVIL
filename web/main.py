@@ -2593,6 +2593,58 @@ class SoundEngine:
                 "voice_count": len(self.voices),
             }
 
+    def runtime_status(self, config_rules=None):
+        now = time.time()
+        config_rules = config_rules or []
+        with self.lock:
+            voices = [dict(voice) for voice in self.voices]
+            rule_state = {str(rule_id): dict(state or {}) for rule_id, state in self.rule_state.items()}
+            suppressed_rule_ids = set(self.suppressed_rule_ids)
+            preview_rule_until = dict(self.preview_rule_until)
+        runtime = {}
+        voices_by_rule = {}
+        for voice in voices:
+            rule_id = str(voice.get("rule_id") or "").strip()
+            if not rule_id:
+                continue
+            voices_by_rule.setdefault(rule_id, []).append(voice)
+        for rule in config_rules:
+            rule_id = str(rule.get("id") or "").strip()
+            if not rule_id:
+                continue
+            entry = {
+                "playing": False,
+                "suppressed": rule_id in suppressed_rule_ids,
+                "preview": preview_rule_until.get(rule_id, 0) > now,
+                "playback_elapsed_sec": 0.0,
+                "playback_duration_sec": 0.0,
+                "playback_progress_pct": 0.0,
+                "cooldown_remaining_sec": 0.0,
+            }
+            matching_voices = voices_by_rule.get(rule_id) or []
+            if matching_voices:
+                voice = matching_voices[0]
+                duration_sec = float(voice.get("duration_sec") or 0.0)
+                elapsed_sec = 0.0
+                if self.channels and self.sample_rate:
+                    elapsed_sec = float(voice.get("position", 0)) / float(self.channels * self.sample_rate)
+                progress_pct = 0.0
+                if duration_sec > 0:
+                    progress_pct = max(0.0, min(100.0, (elapsed_sec / duration_sec) * 100.0))
+                entry.update({
+                    "playing": True,
+                    "playback_elapsed_sec": round(elapsed_sec, 2),
+                    "playback_duration_sec": round(duration_sec, 2),
+                    "playback_progress_pct": round(progress_pct, 1),
+                })
+            state = rule_state.get(rule_id) or {}
+            cooldown_sec = float(rule.get("cooldown_sec") or 0.0)
+            last_trigger_ts = float(state.get("last_trigger_ts") or 0.0)
+            if cooldown_sec > 0 and last_trigger_ts > 0:
+                entry["cooldown_remaining_sec"] = round(max(0.0, cooldown_sec - (now - last_trigger_ts)), 1)
+            runtime[rule_id] = entry
+        return runtime
+
     def set_enabled(self, enabled):
         with self.lock:
             self.global_enabled = bool(enabled)
@@ -2717,6 +2769,9 @@ class SoundEngine:
             self.preview_rule_targets.clear()
 
     def _queue_voice_locked(self, samples, loop, name, rule_id, gain=1.0):
+        duration_sec = 0.0
+        if self.channels and self.sample_rate:
+            duration_sec = len(samples) / float(self.channels * self.sample_rate)
         self.voices.append({
             "samples": samples,
             "position": 0,
@@ -2724,6 +2779,7 @@ class SoundEngine:
             "name": name,
             "rule_id": rule_id,
             "gain": max(0.0, min(1.0, float(gain or 0.0))),
+            "duration_sec": duration_sec,
         })
 
     def play_file(self, filename, loop=False, rule_id=None, gain=1.0):
@@ -3617,6 +3673,7 @@ def api_sound_state():
         "config": config,
         "sounds": sounds,
         "engine": sound_engine.status(),
+        "rule_runtime": sound_engine.runtime_status(config.get("rules") or []),
         "outputs": {
             "usb": DEFAULT_USB_AUDIO_DEVICE,
             "jack": DEFAULT_JACK_AUDIO_DEVICE,
@@ -6054,6 +6111,21 @@ async function renderForecast(data) {{
       }}).join(' + ');
     }}
 
+    function formatRuleRuntime(rule, payload) {{
+      const runtime = (payload?.rule_runtime || {{}})[String(rule.id)] || {{}};
+      const parts = [];
+      if (runtime.playing) {{
+        parts.push(`Audio ${{Number(runtime.playback_elapsed_sec || 0).toFixed(1)}} / ${{Number(runtime.playback_duration_sec || 0).toFixed(1)}} s`);
+      }}
+      if (!runtime.playing && Number(runtime.cooldown_remaining_sec || 0) > 0) {{
+        parts.push(`Cooldown ${{Number(runtime.cooldown_remaining_sec || 0).toFixed(1)}} s`);
+      }}
+      if (runtime.preview) {{
+        parts.push('Preview');
+      }}
+      return parts.join(' | ');
+    }}
+
     function renderSoundState(payload) {{
       soundState = payload;
       const engine = payload.engine || {{}};
@@ -6160,6 +6232,13 @@ async function renderForecast(data) {{
             const muteLabel = isManualMuted ? 'Unmute' : 'Mute';
             const muteStyle = isManualMuted ? 'background:#ef4444; border-color:#ef4444; color:#fff;' : '';
             const suppressionTag = isSuppressed ? '<span style="display:inline-block; margin-left:8px; padding:2px 6px; border-radius:999px; background:#f59e0b; color:#fff; font-size:11px;">Muted temporal</span>' : '';
+            const runtime = (payload?.rule_runtime || {{}})[ruleId] || {{}};
+            const playbackPct = Math.max(0, Math.min(100, Number(runtime.playing ? (runtime.playback_progress_pct || 0) : 0)));
+            const cooldownPct = Number(rule.cooldown_sec || 0) > 0
+              ? Math.max(0, Math.min(100, 100 - (((runtime.cooldown_remaining_sec || 0) / Number(rule.cooldown_sec || 0)) * 100)))
+              : 0;
+            const progressPct = runtime.playing ? playbackPct : cooldownPct;
+            const progressColor = runtime.playing ? '#22c55e' : ((runtime.cooldown_remaining_sec || 0) > 0 ? '#f59e0b' : 'transparent');
             return `
           <div style="margin-bottom:12px; padding-bottom:12px; border-bottom:1px solid rgba(22,50,74,0.08);">
             <strong><span class="dot ${{dotClass}}" style="${{dotStyle}}"></span>${{rule.name}}</strong><br>
@@ -6167,6 +6246,12 @@ async function renderForecast(data) {{
             Sonido: ${{rule.sound_file}} | Modo: ${{modeLabels[rule.mode] || rule.mode}}<br>
             Estado: ${{stateText}}${{suppressionTag}}<br>
             Rango: ${{rule.min_value ?? '--'}} a ${{rule.max_value ?? '--'}} | Cambio mínimo: ${{rule.min_delta}} | Cooldown: ${{rule.cooldown_sec}}s | Volumen: ${{rule.volume_pct ?? 100}}%<br>
+            <div style="margin:6px 0 8px 0; display:inline-block; min-width:220px; max-width:260px;">
+              <div style="font-size:12px; opacity:0.86;">${{formatRuleRuntime(rule, payload) || 'Sin actividad reciente'}}</div>
+              <div style="margin-top:4px; height:6px; background:rgba(22,50,74,0.12); border-radius:999px; overflow:hidden;">
+                <div style="height:100%; width:${{progressPct}}%; background:${{progressColor}};"></div>
+              </div>
+            </div>
             Bloquea: ${{formatStopRuleTargets(rule, rules)}}<br>
             <button onclick="playSoundRule('${{rule.id}}')">Play</button>
             <button onclick="toggleSoundRuleMute('${{rule.id}}')" style="${{muteStyle}}">${{muteLabel}}</button>
@@ -6808,6 +6893,7 @@ async function renderForecast(data) {{
     setInterval(loadFanState, 5000);
     setInterval(loadVaporSequenceState, 1000);
     setInterval(loadVaporAutomationState, 5000);
+    setInterval(loadSoundState, 1000);
     setInterval(loadFxState, 10000);
     setInterval(loadExportState, 5000);
     setInterval(loadWindCalibration, 10000);
