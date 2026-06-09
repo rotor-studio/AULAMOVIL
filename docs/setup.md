@@ -160,6 +160,10 @@ Dashboard: http://<pi-ip>:8000/
   - `interval`
 - `interval` is the right mode for short samples that should leave silence between plays while the sensor stays in range.
 - Rules also support per-rule `Mute`, per-rule volume, and `Bloquea regla` / `Bloquea regla 2` for persistent inhibition of other rules while the blocking rule remains active.
+- Each rule now also has a `Play` preview button:
+  - it uses the rule's own sound and volume
+  - it applies that rule's blocking/silencing behavior
+  - it is isolated from the automatic trigger loop so the sample can play cleanly to the end
 
 ## Install
 `

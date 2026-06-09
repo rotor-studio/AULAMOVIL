@@ -2549,6 +2549,9 @@ class SoundEngine:
         self.channels = 2
         self.chunk_frames = 2048
         self.voices = []
+        self.suppressed_rule_ids = set()
+        self.preview_rule_until = {}
+        self.preview_rule_targets = {}
         self.decoded_cache = {}
         self.last_audio_error = None
 
@@ -2580,6 +2583,11 @@ class SoundEngine:
                 "playing": bool(self.voices),
                 "current_rule_id": ",".join(active_rule_ids) or None,
                 "active_rule_ids": active_rule_ids,
+                "suppressed_rule_ids": sorted(self.suppressed_rule_ids),
+                "preview_rule_ids": sorted([
+                    rule_id for rule_id, until_ts in self.preview_rule_until.items()
+                    if until_ts > time.time()
+                ]),
                 "current_name": ", ".join(names) if names else None,
                 "current_loop": any(voice.get("loop") for voice in self.voices),
                 "voice_count": len(self.voices),
@@ -2590,6 +2598,9 @@ class SoundEngine:
             self.global_enabled = bool(enabled)
             if not self.global_enabled:
                 self.voices.clear()
+                self.suppressed_rule_ids.clear()
+                self.preview_rule_until.clear()
+                self.preview_rule_targets.clear()
                 self._stop_player_locked()
 
     def _stop_player_locked(self):
@@ -2701,6 +2712,9 @@ class SoundEngine:
     def stop_sound(self):
         with self.lock:
             self.voices.clear()
+            self.suppressed_rule_ids.clear()
+            self.preview_rule_until.clear()
+            self.preview_rule_targets.clear()
 
     def _queue_voice_locked(self, samples, loop, name, rule_id, gain=1.0):
         self.voices.append({
@@ -2725,6 +2739,33 @@ class SoundEngine:
         samples = build_chirp_pcm()
         with self.lock:
             self._queue_voice_locked(samples, loop=False, name="chirp", rule_id=rule_id, gain=gain)
+
+    def start_rule_preview(self, rule_id, filename, gain=1.0, stop_rule_ids=None):
+        stop_targets = [
+            str(value or "").strip()
+            for value in (stop_rule_ids or [])
+            if str(value or "").strip()
+        ]
+        duration_sec = 1.0
+        if filename == "__chirp__":
+            samples = build_chirp_pcm()
+            duration_sec = len(samples) / float(self.sample_rate * self.channels)
+            with self.lock:
+                self.voices = [voice for voice in self.voices if voice.get("rule_id") != rule_id]
+                self._queue_voice_locked(samples, loop=False, name="chirp", rule_id=rule_id, gain=gain)
+                self.preview_rule_until[str(rule_id)] = time.time() + duration_sec + 0.5
+                self.preview_rule_targets[str(rule_id)] = stop_targets
+        else:
+            path = os.path.join(SOUND_DIR, filename)
+            samples = self.decode_file(path)
+            duration_sec = len(samples) / float(self.sample_rate * self.channels)
+            with self.lock:
+                self.voices = [voice for voice in self.voices if voice.get("rule_id") != rule_id]
+                self._queue_voice_locked(samples, loop=False, name=filename, rule_id=rule_id, gain=gain)
+                self.preview_rule_until[str(rule_id)] = time.time() + duration_sec + 0.5
+                self.preview_rule_targets[str(rule_id)] = stop_targets
+        if stop_targets:
+            self.stop_rule_targets(stop_targets)
 
     def audio_loop(self):
         while not self.stop_event.wait(0.01):
@@ -2786,10 +2827,18 @@ class SoundEngine:
             self.set_enabled(config.get("enabled", False))
             if not self.global_enabled:
                 continue
+            now = time.time()
+            with self.lock:
+                expired_previews = [
+                    rule_id for rule_id, until_ts in self.preview_rule_until.items()
+                    if until_ts <= now
+                ]
+                for rule_id in expired_previews:
+                    self.preview_rule_until.pop(rule_id, None)
+                    self.preview_rule_targets.pop(rule_id, None)
             latest = get_latest_map()
             rules = config.get("rules", [])
             rule_contexts = []
-            blocked_rule_ids = set()
             for rule in rules:
                 if not rule.get("enabled", True):
                     continue
@@ -2827,15 +2876,32 @@ class SoundEngine:
                     "in_range": in_range,
                 }
                 rule_contexts.append(context)
-                if in_range and not muted and stop_rule_ids:
-                    blocked_rule_ids.update(stop_rule_ids)
+            suppressed_rule_ids = set()
+            with self.lock:
+                preview_rule_until = dict(self.preview_rule_until)
+                preview_rule_targets = dict(self.preview_rule_targets)
+            for context in rule_contexts:
+                rule = context["rule"]
+                if context["muted"]:
+                    continue
+                if not context["stop_rule_ids"]:
+                    continue
+                if self.is_rule_playing(rule["id"]):
+                    suppressed_rule_ids.update(context["stop_rule_ids"])
+            for preview_rule_id, until_ts in preview_rule_until.items():
+                if until_ts > now and self.is_rule_playing(preview_rule_id):
+                    suppressed_rule_ids.update(preview_rule_targets.get(preview_rule_id, []))
 
-            if blocked_rule_ids:
-                self.stop_rule_targets(blocked_rule_ids)
+            with self.lock:
+                self.suppressed_rule_ids = set(suppressed_rule_ids)
+            if suppressed_rule_ids:
+                self.stop_rule_targets(suppressed_rule_ids)
             for context in rule_contexts:
                 rule = context["rule"]
                 if not rule.get("enabled", True):
                     self.stop_rule_sound(rule.get("id"))
+                    continue
+                if str(rule["id"]) in preview_rule_until and preview_rule_until[str(rule["id"])] > now:
                     continue
                 sound_file = rule.get("sound_file")
                 muted = context["muted"]
@@ -2854,20 +2920,21 @@ class SoundEngine:
                 in_range = context["in_range"]
                 delta = None if state["last_value"] is None else abs(value - state["last_value"])
                 changed = state["last_value"] is None or delta >= min_delta
-                now = time.time()
                 mode = rule.get("mode", "once")
                 is_current = self.is_rule_playing(rule["id"])
                 is_chirp = sound_file == "__chirp__"
                 try_trigger = in_range and changed and (now - state["last_trigger_ts"] >= cooldown)
-                is_blocked = rule["id"] in blocked_rule_ids
+                is_suppressed = rule["id"] in suppressed_rule_ids
 
                 if mode == "loop" and not is_chirp:
-                    if muted or is_blocked:
+                    if muted or is_suppressed:
                         if is_current:
                             self.stop_rule_sound(rule["id"])
                         state["active"] = False
                     elif in_range and not is_current and (now - state["last_trigger_ts"] >= cooldown):
                         try:
+                            if stop_rule_ids:
+                                self.stop_rule_targets(stop_rule_ids)
                             self.play_file(sound_file, loop=True, rule_id=rule["id"], gain=gain)
                             state["last_trigger_ts"] = now
                             state["active"] = True
@@ -2879,12 +2946,14 @@ class SoundEngine:
                     elif not in_range:
                         state["active"] = False
                 elif mode == "interval":
-                    if muted or is_blocked:
+                    if muted or is_suppressed:
                         if is_current:
                             self.stop_rule_sound(rule["id"])
                         state["active"] = False
                     elif in_range and not is_current and (now - state["last_trigger_ts"] >= cooldown):
                         try:
+                            if stop_rule_ids:
+                                self.stop_rule_targets(stop_rule_ids)
                             self.play_file(sound_file, loop=False, rule_id=rule["id"], gain=gain)
                             state["last_trigger_ts"] = now
                             state["active"] = True
@@ -2897,12 +2966,14 @@ class SoundEngine:
                     elif now - state["last_trigger_ts"] >= cooldown:
                         state["active"] = False
                 else:
-                    if is_blocked:
+                    if is_suppressed:
                         if is_current:
                             self.stop_rule_sound(rule["id"])
                         state["active"] = False
                     elif try_trigger and not state["active"]:
                         try:
+                            if stop_rule_ids:
+                                self.stop_rule_targets(stop_rule_ids)
                             if not muted:
                                 self.play_file(sound_file, loop=False, rule_id=rule["id"], gain=gain)
                             state["last_trigger_ts"] = now
@@ -3614,6 +3685,34 @@ def api_sound_test_file(filename: str = Form(...), loop: bool = Form(False)):
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc))
     return {"ok": True}
+
+
+@app.post("/api/sound/test/rule")
+def api_sound_test_rule(rule_id: str = Form(...)):
+    config = load_sound_config()
+    rule = next((item for item in (config.get("rules") or []) if str(item.get("id")) == str(rule_id)), None)
+    if not rule:
+        raise HTTPException(status_code=404, detail="Regla no encontrada.")
+    filename = str(rule.get("sound_file") or "").strip()
+    if not filename:
+        raise HTTPException(status_code=400, detail="La regla no tiene sonido asignado.")
+    gain = max(0.0, min(1.0, float(rule.get("volume_pct") or 100.0) / 100.0))
+    stop_rule_ids = [
+        str(value or "").strip()
+        for value in (rule.get("stop_rule_ids") or [])
+        if str(value or "").strip()
+    ]
+    if not stop_rule_ids:
+        legacy_stop_rule_id = str(rule.get("stop_rule_id") or "").strip() or None
+        if legacy_stop_rule_id:
+            stop_rule_ids = [legacy_stop_rule_id]
+    try:
+        sound_engine.start_rule_preview(rule_id, filename, gain=gain, stop_rule_ids=stop_rule_ids)
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="Archivo no encontrado.")
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+    return {"ok": True, "rule_id": rule_id}
 
 
 @app.post("/api/sound/upload")
@@ -5968,6 +6067,7 @@ async function renderForecast(data) {{
         interval: 'Intervalo',
       }};
       const activeRuleIds = new Set((engine.active_rule_ids || []).map(String));
+      const suppressedRuleIds = new Set((engine.suppressed_rule_ids || []).map(String));
       const outputDevice = config.output_device || '';
       const outputLabel = outputDevice.includes('CD002') ? 'USB' : (outputDevice.includes('Headphones') ? 'Jack' : (outputDevice || '--'));
       const usbActive = outputDevice.includes('CD002');
@@ -6047,18 +6147,35 @@ async function renderForecast(data) {{
       const rulesList = document.getElementById('soundRulesList');
       if (rulesList) {{
         rulesList.innerHTML = rules.length ? rules.map(rule => `
+          ${{(() => {{
+            const ruleId = String(rule.id);
+            const isActive = activeRuleIds.has(ruleId);
+            const isSuppressed = suppressedRuleIds.has(ruleId);
+            const isManualMuted = !!rule.muted;
+            const dotClass = isActive ? 'online' : 'offline';
+            const dotStyle = isSuppressed ? 'background:#f59e0b;' : (isManualMuted ? 'background:#ef4444;' : '');
+            const stateText = isActive
+              ? 'Disparando'
+              : (isSuppressed ? 'Silenciada por otra regla' : (isManualMuted ? 'Muted manual' : (rule.enabled ? 'En espera' : 'Parada')));
+            const muteLabel = isManualMuted ? 'Unmute' : 'Mute';
+            const muteStyle = isManualMuted ? 'background:#ef4444; border-color:#ef4444; color:#fff;' : '';
+            const suppressionTag = isSuppressed ? '<span style="display:inline-block; margin-left:8px; padding:2px 6px; border-radius:999px; background:#f59e0b; color:#fff; font-size:11px;">Muted temporal</span>' : '';
+            return `
           <div style="margin-bottom:12px; padding-bottom:12px; border-bottom:1px solid rgba(22,50,74,0.08);">
-            <strong><span class="dot ${{activeRuleIds.has(String(rule.id)) ? 'online' : 'offline'}}"></span>${{rule.name}}</strong><br>
+            <strong><span class="dot ${{dotClass}}" style="${{dotStyle}}"></span>${{rule.name}}</strong><br>
             Sensor: ${{rule.device_id}} / ${{rule.metric_id}}<br>
             Sonido: ${{rule.sound_file}} | Modo: ${{modeLabels[rule.mode] || rule.mode}}<br>
-            Estado: ${{activeRuleIds.has(String(rule.id)) ? 'Disparando' : (rule.enabled ? 'En espera' : 'Parada')}}${{rule.muted ? ' | Muted' : ''}}<br>
+            Estado: ${{stateText}}${{suppressionTag}}<br>
             Rango: ${{rule.min_value ?? '--'}} a ${{rule.max_value ?? '--'}} | Cambio mínimo: ${{rule.min_delta}} | Cooldown: ${{rule.cooldown_sec}}s | Volumen: ${{rule.volume_pct ?? 100}}%<br>
             Bloquea: ${{formatStopRuleTargets(rule, rules)}}<br>
-            <button onclick="toggleSoundRuleMute('${{rule.id}}')">${{rule.muted ? 'Unmute' : 'Mute'}}</button>
+            <button onclick="playSoundRule('${{rule.id}}')">Play</button>
+            <button onclick="toggleSoundRuleMute('${{rule.id}}')" style="${{muteStyle}}">${{muteLabel}}</button>
             <input type="range" min="0" max="100" step="1" value="${{Number(rule.volume_pct ?? 100)}}" oninput="previewSoundRuleVolume('${{rule.id}}', this.value)" onchange="setSoundRuleVolume('${{rule.id}}', this.value)" style="width:120px; vertical-align:middle; margin:0 8px;">
             <span id="soundRuleVolumeLabel_${{rule.id}}">${{Number(rule.volume_pct ?? 100)}}%</span>
             <button onclick="removeSoundRule('${{rule.id}}')">Borrar</button>
           </div>
+        `;
+          }})()}}
         `).join('') : '<p>Sin reglas configuradas.</p>';
       }}
     }}
@@ -6114,6 +6231,13 @@ async function renderForecast(data) {{
       form.append('filename', filename);
       form.append('loop', loop ? 'true' : 'false');
       await fetch('/api/sound/test/file', {{ method: 'POST', body: form }});
+      await loadSoundState();
+    }}
+
+    async function playSoundRule(ruleId) {{
+      const form = new FormData();
+      form.append('rule_id', ruleId);
+      await fetch('/api/sound/test/rule', {{ method: 'POST', body: form }});
       await loadSoundState();
     }}
 
