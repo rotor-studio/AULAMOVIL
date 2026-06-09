@@ -401,6 +401,7 @@
   - `output_device`
 - Current UI behavior:
   - manual sound tests
+  - per-rule `Play` preview
   - file upload and delete
   - sensor-driven rules
   - rule activity indicators
@@ -414,8 +415,9 @@
   - `loop`: continuous playback while the metric stays in range
   - `interval`: one-shot playback every `cooldown` while the metric stays in range, with silence between plays
 - Rule blocking semantics:
-  - `Bloquea regla` and `Bloquea regla 2` are persistent while the blocking rule stays active/in range
-  - blocked rules are stopped and cannot re-enter until the blocker drops out
+  - `Bloquea regla` and `Bloquea regla 2` now silence targets while the source rule is actually sounding
+  - muted-by-rule targets show as temporary suppression in the UI
+  - per-rule `Play` preview uses the rule's own blocking behavior but is isolated from the automatic trigger loop
 - Current sound API endpoints:
   - `GET /api/sound/state`
   - `POST /api/sound/global`
