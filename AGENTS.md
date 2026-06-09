@@ -408,11 +408,14 @@
   - volume slider for the active output
   - per-rule `Mute`
   - per-rule volume
-  - per-rule stop target
+  - per-rule blocking targets
 - Current rule modes:
   - `once`: triggers on entry/change and respects `cooldown`
   - `loop`: continuous playback while the metric stays in range
   - `interval`: one-shot playback every `cooldown` while the metric stays in range, with silence between plays
+- Rule blocking semantics:
+  - `Bloquea regla` and `Bloquea regla 2` are persistent while the blocking rule stays active/in range
+  - blocked rules are stopped and cannot re-enter until the blocker drops out
 - Current sound API endpoints:
   - `GET /api/sound/state`
   - `POST /api/sound/global`

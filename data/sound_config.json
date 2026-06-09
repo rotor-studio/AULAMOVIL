@@ -16,6 +16,7 @@
       "enabled": true,
       "muted": false,
       "volume_pct": 100,
+      "stop_rule_ids": [],
       "stop_rule_id": null
     },
     {
@@ -32,6 +33,7 @@
       "enabled": true,
       "muted": false,
       "volume_pct": 27,
+      "stop_rule_ids": [],
       "stop_rule_id": null
     },
     {
@@ -48,6 +50,7 @@
       "enabled": true,
       "muted": false,
       "volume_pct": 100,
+      "stop_rule_ids": [],
       "stop_rule_id": null
     },
     {
@@ -64,6 +67,7 @@
       "enabled": true,
       "muted": false,
       "volume_pct": 100,
+      "stop_rule_ids": [],
       "stop_rule_id": null
     },
     {
@@ -80,6 +84,7 @@
       "enabled": true,
       "muted": false,
       "volume_pct": 100,
+      "stop_rule_ids": [],
       "stop_rule_id": null
     },
     {
@@ -95,7 +100,8 @@
       "cooldown_sec": 10.0,
       "enabled": true,
       "muted": false,
-      "volume_pct": 100,
+      "volume_pct": 51,
+      "stop_rule_ids": [],
       "stop_rule_id": null
     },
     {
@@ -112,6 +118,7 @@
       "enabled": true,
       "muted": false,
       "volume_pct": 100,
+      "stop_rule_ids": [],
       "stop_rule_id": null
     },
     {
@@ -128,6 +135,7 @@
       "enabled": true,
       "muted": false,
       "volume_pct": 55,
+      "stop_rule_ids": [],
       "stop_rule_id": null
     },
     {
@@ -144,6 +152,7 @@
       "enabled": true,
       "muted": false,
       "volume_pct": 100,
+      "stop_rule_ids": [],
       "stop_rule_id": null
     },
     {
@@ -160,6 +169,7 @@
       "enabled": true,
       "muted": false,
       "volume_pct": 42,
+      "stop_rule_ids": [],
       "stop_rule_id": null
     },
     {
@@ -176,6 +186,7 @@
       "enabled": true,
       "muted": false,
       "volume_pct": 100,
+      "stop_rule_ids": [],
       "stop_rule_id": null
     },
     {
@@ -192,6 +203,9 @@
       "enabled": true,
       "muted": false,
       "volume_pct": 100,
+      "stop_rule_ids": [
+        "rule_1781005713995"
+      ],
       "stop_rule_id": "rule_1781005713995"
     },
     {
@@ -208,6 +222,9 @@
       "enabled": true,
       "muted": false,
       "volume_pct": 100,
+      "stop_rule_ids": [
+        "rule_1781005713995"
+      ],
       "stop_rule_id": "rule_1781005713995"
     },
     {
@@ -224,6 +241,9 @@
       "enabled": true,
       "muted": false,
       "volume_pct": 100,
+      "stop_rule_ids": [
+        "rule_1781005713995"
+      ],
       "stop_rule_id": "rule_1781005713995"
     },
     {
@@ -240,10 +260,13 @@
       "enabled": true,
       "muted": false,
       "volume_pct": 100,
+      "stop_rule_ids": [
+        "rule_1781005713995"
+      ],
       "stop_rule_id": "rule_1781005713995"
     },
     {
-      "id": "rule_1781010354473",
+      "id": "rule_1781024379371",
       "name": "PRES ALTA",
       "device_id": "bme280_ground",
       "metric_id": "pressure_ground_hpa",
@@ -252,11 +275,15 @@
       "min_value": "1020",
       "max_value": "1025",
       "min_delta": 1.0,
-      "cooldown_sec": 100.0,
+      "cooldown_sec": 200.0,
       "enabled": true,
       "muted": false,
-      "volume_pct": 61,
-      "stop_rule_id": null
+      "volume_pct": 60,
+      "stop_rule_ids": [
+        "rule_1781006710783",
+        "rule_1781006777558"
+      ],
+      "stop_rule_id": "rule_1781006710783"
     }
   ]
 }
