@@ -2090,6 +2090,31 @@ def default_sound_config():
     }
 
 
+def normalize_sound_rule(raw):
+    raw = raw or {}
+    rid = raw.get("id") or uuid.uuid4().hex
+    stop_rule_id = str(raw.get("stop_rule_id") or "").strip() or None
+    if stop_rule_id == rid:
+        stop_rule_id = None
+    volume_pct = max(0, min(100, int(round(float(raw.get("volume_pct") or 100)))))
+    return {
+        "id": rid,
+        "name": str(raw.get("name") or rid),
+        "device_id": raw.get("device_id") or "",
+        "metric_id": raw.get("metric_id") or "",
+        "sound_file": raw.get("sound_file") or "",
+        "mode": raw.get("mode") or "once",
+        "min_value": raw.get("min_value"),
+        "max_value": raw.get("max_value"),
+        "min_delta": float(raw.get("min_delta") or 0.0),
+        "cooldown_sec": float(raw.get("cooldown_sec") or 10.0),
+        "enabled": bool(raw.get("enabled", True)),
+        "muted": bool(raw.get("muted", False)),
+        "volume_pct": volume_pct,
+        "stop_rule_id": stop_rule_id,
+    }
+
+
 def load_sound_config():
     if not os.path.exists(SOUND_CONFIG_PATH):
         return default_sound_config()
@@ -2101,14 +2126,18 @@ def load_sound_config():
         data.setdefault("enabled", False)
         data.setdefault("output_device", DEFAULT_USB_AUDIO_DEVICE)
         data.setdefault("rules", [])
+        data["rules"] = [normalize_sound_rule(rule) for rule in (data.get("rules") or []) if isinstance(rule, dict)]
         return data
     except Exception:
         return default_sound_config()
 
 
 def save_sound_config(config):
+    payload = default_sound_config()
+    payload.update(config or {})
+    payload["rules"] = [normalize_sound_rule(rule) for rule in (payload.get("rules") or []) if isinstance(rule, dict)]
     with open(SOUND_CONFIG_PATH, "w", encoding="utf-8") as f:
-        json.dump(config, f, ensure_ascii=False, indent=2)
+        json.dump(payload, f, ensure_ascii=False, indent=2)
 
 
 def configured_output_device():
@@ -2642,32 +2671,47 @@ class SoundEngine:
         with self.lock:
             self.voices = [voice for voice in self.voices if voice.get("rule_id") != rule_id]
 
+    def set_rule_gain(self, rule_id, gain):
+        safe_gain = max(0.0, min(1.0, float(gain or 0.0)))
+        with self.lock:
+            for voice in self.voices:
+                if voice.get("rule_id") == rule_id:
+                    voice["gain"] = safe_gain
+
+    def stop_rule_targets(self, rule_ids):
+        targets = {str(rule_id or "").strip() for rule_id in (rule_ids or []) if str(rule_id or "").strip()}
+        if not targets:
+            return
+        with self.lock:
+            self.voices = [voice for voice in self.voices if str(voice.get("rule_id") or "") not in targets]
+
     def stop_sound(self):
         with self.lock:
             self.voices.clear()
 
-    def _queue_voice_locked(self, samples, loop, name, rule_id):
+    def _queue_voice_locked(self, samples, loop, name, rule_id, gain=1.0):
         self.voices.append({
             "samples": samples,
             "position": 0,
             "loop": loop,
             "name": name,
             "rule_id": rule_id,
+            "gain": max(0.0, min(1.0, float(gain or 0.0))),
         })
 
-    def play_file(self, filename, loop=False, rule_id=None):
+    def play_file(self, filename, loop=False, rule_id=None, gain=1.0):
         if filename == "__chirp__":
-            self.play_chirp(rule_id=rule_id)
+            self.play_chirp(rule_id=rule_id, gain=gain)
             return
         path = os.path.join(SOUND_DIR, filename)
         samples = self.decode_file(path)
         with self.lock:
-            self._queue_voice_locked(samples, loop=loop, name=filename, rule_id=rule_id)
+            self._queue_voice_locked(samples, loop=loop, name=filename, rule_id=rule_id, gain=gain)
 
-    def play_chirp(self, rule_id="test"):
+    def play_chirp(self, rule_id="test", gain=1.0):
         samples = build_chirp_pcm()
         with self.lock:
-            self._queue_voice_locked(samples, loop=False, name="chirp", rule_id=rule_id)
+            self._queue_voice_locked(samples, loop=False, name="chirp", rule_id=rule_id, gain=gain)
 
     def audio_loop(self):
         while not self.stop_event.wait(0.01):
@@ -2688,6 +2732,7 @@ class SoundEngine:
                 for voice in self.voices:
                     samples = voice["samples"]
                     pos = voice["position"]
+                    gain = max(0.0, min(1.0, float(voice.get("gain", 1.0) or 0.0)))
                     for frame in range(self.chunk_frames):
                         if pos >= len(samples):
                             if voice["loop"]:
@@ -2696,7 +2741,7 @@ class SoundEngine:
                                 break
                         for ch in range(self.channels):
                             if pos + ch < len(samples):
-                                mix[frame * self.channels + ch] += samples[pos + ch]
+                                mix[frame * self.channels + ch] += int(samples[pos + ch] * gain)
                         pos += self.channels
                     if pos < len(samples) or voice["loop"]:
                         voice["position"] = pos
@@ -2739,6 +2784,9 @@ class SoundEngine:
                 sound_file = rule.get("sound_file")
                 if not metric_id or not sound_file:
                     continue
+                muted = bool(rule.get("muted", False))
+                gain = max(0.0, min(1.0, float(rule.get("volume_pct") or 100.0) / 100.0))
+                stop_rule_id = str(rule.get("stop_rule_id") or "").strip() or None
                 item = get_metric(latest, metric_id, device_id)
                 if not item:
                     continue
@@ -2768,7 +2816,10 @@ class SoundEngine:
                 if mode == "loop" and not is_chirp:
                     if in_range and not is_current:
                         try:
-                            self.play_file(sound_file, loop=True, rule_id=rule["id"])
+                            if stop_rule_id:
+                                self.stop_rule_sound(stop_rule_id)
+                            if not muted:
+                                self.play_file(sound_file, loop=True, rule_id=rule["id"], gain=gain)
                             state["last_trigger_ts"] = now
                             state["active"] = True
                         except Exception:
@@ -2781,7 +2832,10 @@ class SoundEngine:
                 else:
                     if try_trigger and not state["active"]:
                         try:
-                            self.play_file(sound_file, loop=False, rule_id=rule["id"])
+                            if stop_rule_id:
+                                self.stop_rule_sound(stop_rule_id)
+                            if not muted:
+                                self.play_file(sound_file, loop=False, rule_id=rule["id"], gain=gain)
                             state["last_trigger_ts"] = now
                             state["active"] = True
                         except Exception:
@@ -3529,25 +3583,43 @@ def api_sound_rules(payload: dict):
     rules = payload.get("rules")
     if not isinstance(rules, list):
         raise HTTPException(status_code=400, detail="rules debe ser una lista")
+    previous_config = load_sound_config()
+    previous_rules = {
+        str(rule.get("id")): normalize_sound_rule(rule)
+        for rule in (previous_config.get("rules") or [])
+        if isinstance(rule, dict) and rule.get("id")
+    }
     normalized = []
     for raw in rules:
-        rid = raw.get("id") or uuid.uuid4().hex
-        normalized.append({
-            "id": rid,
-            "name": str(raw.get("name") or rid),
-            "device_id": raw.get("device_id") or "",
-            "metric_id": raw.get("metric_id") or "",
-            "sound_file": raw.get("sound_file") or "",
-            "mode": raw.get("mode") or "once",
-            "min_value": raw.get("min_value"),
-            "max_value": raw.get("max_value"),
-            "min_delta": float(raw.get("min_delta") or 0.0),
-            "cooldown_sec": float(raw.get("cooldown_sec") or 10.0),
-            "enabled": bool(raw.get("enabled", True)),
-        })
-    config = load_sound_config()
+        if isinstance(raw, dict):
+            normalized.append(normalize_sound_rule(raw))
+    config = previous_config
     config["rules"] = normalized
     save_sound_config(config)
+    for rule in normalized:
+        rule_id = str(rule.get("id") or "").strip()
+        if not rule_id:
+            continue
+        previous = previous_rules.get(rule_id, {})
+        muted = bool(rule.get("muted", False))
+        volume_pct = int(rule.get("volume_pct") or 100)
+        gain = max(0.0, min(1.0, float(volume_pct) / 100.0))
+        if muted:
+            sound_engine.stop_rule_sound(rule_id)
+        else:
+            sound_engine.set_rule_gain(rule_id, gain)
+        if (
+            muted != bool(previous.get("muted", False))
+            or volume_pct != int(previous.get("volume_pct") or 100)
+        ):
+            state = sound_engine.rule_state.setdefault(rule_id, {
+                "last_value": None,
+                "active": False,
+                "last_trigger_ts": 0.0,
+            })
+            state["last_value"] = None
+            state["active"] = False
+            state["last_trigger_ts"] = 0.0
     return {"ok": True, "config": config}
 
 
@@ -4203,6 +4275,13 @@ def index():
         <label>Max valor: <input id=\"soundMaxValue\" type=\"number\" step=\"any\" /></label>
         <label>Cambio mínimo: <input id=\"soundMinDelta\" type=\"number\" step=\"any\" value=\"1\" /></label>
         <label>Cooldown (s): <input id=\"soundCooldown\" type=\"number\" step=\"1\" value=\"10\" /></label>
+        <label>Volumen regla (%): <input id=\"soundRuleVolume\" type=\"number\" min=\"0\" max=\"100\" step=\"1\" value=\"100\" /></label>
+        <label>Apaga regla:
+          <select id=\"soundStopRuleSelect\">
+            <option value=\"\">Ninguna</option>
+          </select>
+        </label>
+        <label><input id=\"soundRuleMuted\" type=\"checkbox\" /> Mute</label>
         <button onclick=\"addSoundRule()\">Añadir regla</button>
       </div>
       <div style=\"margin-top:8px; opacity:0.85;\">Una regla se dispara cuando el sensor entra en rango y cambia al menos el valor indicado.</div>
@@ -5837,6 +5916,16 @@ async function renderForecast(data) {{
         if (current) soundSelect.value = current;
       }}
 
+      const stopRuleSelect = document.getElementById('soundStopRuleSelect');
+      if (stopRuleSelect) {{
+        const current = stopRuleSelect.value;
+        const options = ['<option value="">Ninguna</option>'].concat(
+          rules.map(rule => `<option value="${{rule.id}}">${{escapeHtml(rule.name || rule.id)}}</option>`)
+        );
+        stopRuleSelect.innerHTML = options.join('');
+        if (current) stopRuleSelect.value = current;
+      }}
+
       const filesList = document.getElementById('soundFilesList');
       if (filesList) {{
         filesList.innerHTML = sounds.length ? sounds.map(item => `
@@ -5856,8 +5945,12 @@ async function renderForecast(data) {{
             <strong><span class="dot ${{activeRuleIds.has(String(rule.id)) ? 'online' : 'offline'}}"></span>${{rule.name}}</strong><br>
             Sensor: ${{rule.device_id}} / ${{rule.metric_id}}<br>
             Sonido: ${{rule.sound_file}} | Modo: ${{rule.mode}}<br>
-            Estado: ${{activeRuleIds.has(String(rule.id)) ? 'Disparando' : (rule.enabled ? 'En espera' : 'Parada')}}<br>
-            Rango: ${{rule.min_value ?? '--'}} a ${{rule.max_value ?? '--'}} | Cambio mínimo: ${{rule.min_delta}} | Cooldown: ${{rule.cooldown_sec}}s | ${{rule.enabled ? 'Activa' : 'Parada'}}<br>
+            Estado: ${{activeRuleIds.has(String(rule.id)) ? 'Disparando' : (rule.enabled ? 'En espera' : 'Parada')}}${{rule.muted ? ' | Muted' : ''}}<br>
+            Rango: ${{rule.min_value ?? '--'}} a ${{rule.max_value ?? '--'}} | Cambio mínimo: ${{rule.min_delta}} | Cooldown: ${{rule.cooldown_sec}}s | Volumen: ${{rule.volume_pct ?? 100}}%<br>
+            Apaga: ${{rule.stop_rule_id ? escapeHtml((rules.find(item => String(item.id) === String(rule.stop_rule_id)) || {{}}).name || rule.stop_rule_id) : 'Ninguna'}}<br>
+            <button onclick="toggleSoundRuleMute('${{rule.id}}')">${{rule.muted ? 'Unmute' : 'Mute'}}</button>
+            <input type="range" min="0" max="100" step="1" value="${{Number(rule.volume_pct ?? 100)}}" oninput="previewSoundRuleVolume('${{rule.id}}', this.value)" onchange="setSoundRuleVolume('${{rule.id}}', this.value)" style="width:120px; vertical-align:middle; margin:0 8px;">
+            <span id="soundRuleVolumeLabel_${{rule.id}}">${{Number(rule.volume_pct ?? 100)}}%</span>
             <button onclick="removeSoundRule('${{rule.id}}')">Borrar</button>
           </div>
         `).join('') : '<p>Sin reglas configuradas.</p>';
@@ -5956,19 +6049,49 @@ async function renderForecast(data) {{
         max_value: document.getElementById('soundMaxValue')?.value || null,
         min_delta: document.getElementById('soundMinDelta')?.value || 0,
         cooldown_sec: document.getElementById('soundCooldown')?.value || 10,
+        volume_pct: document.getElementById('soundRuleVolume')?.value || 100,
+        muted: !!document.getElementById('soundRuleMuted')?.checked,
+        stop_rule_id: document.getElementById('soundStopRuleSelect')?.value || null,
         enabled: true,
       }});
-      await fetch('/api/sound/rules', {{
-        method: 'POST',
-        headers: {{ 'Content-Type': 'application/json' }},
-        body: JSON.stringify({{ rules: nextRules }}),
-      }});
-      await loadSoundState();
+      await persistSoundRules(nextRules);
     }}
 
     async function removeSoundRule(ruleId) {{
       await fetch(`/api/sound/rules/${{ruleId}}`, {{ method: 'DELETE' }});
       await loadSoundState();
+    }}
+
+    async function persistSoundRules(rules) {{
+      await fetch('/api/sound/rules', {{
+        method: 'POST',
+        headers: {{ 'Content-Type': 'application/json' }},
+        body: JSON.stringify({{ rules }}),
+      }});
+      await loadSoundState();
+    }}
+
+    function previewSoundRuleVolume(ruleId, value) {{
+      const label = document.getElementById(`soundRuleVolumeLabel_${{ruleId}}`);
+      if (label) label.textContent = `${{value}}%`;
+    }}
+
+    async function setSoundRuleVolume(ruleId, value) {{
+      if (!soundState) return;
+      const rules = [ ...(soundState?.config?.rules || []) ];
+      const nextRules = rules.map(rule => String(rule.id) === String(ruleId)
+        ? {{ ...rule, volume_pct: Number(value) }}
+        : rule);
+      await persistSoundRules(nextRules);
+    }}
+
+    async function toggleSoundRuleMute(ruleId) {{
+      if (!soundState) return;
+      const rules = [ ...(soundState?.config?.rules || []) ];
+      const nextRules = rules.map(rule => String(rule.id) === String(ruleId)
+        ? {{ ...rule, muted: !rule.muted }}
+        : rule);
+      await persistSoundRules(nextRules);
     }}
 
 
