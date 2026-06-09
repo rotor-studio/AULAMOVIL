@@ -1973,6 +1973,24 @@ def default_vapor_automation_config():
     }
 
 
+def normalize_vapor_automation_rule(raw):
+    raw = raw or {}
+    rid = raw.get("id") or uuid.uuid4().hex
+    return {
+        "id": rid,
+        "name": str(raw.get("name") or rid),
+        "device_id": raw.get("device_id") or "",
+        "metric_id": raw.get("metric_id") or "",
+        "sequence_id": str(raw.get("sequence_id") or "").strip() or None,
+        "min_value": raw.get("min_value"),
+        "max_value": raw.get("max_value"),
+        "min_delta": float(raw.get("min_delta") or 0.0),
+        "cooldown_sec": float(raw.get("cooldown_sec") or 10.0),
+        "enabled": bool(raw.get("enabled", True)),
+        "muted": bool(raw.get("muted", False)),
+    }
+
+
 def load_vapor_automation_config():
     if not os.path.exists(VAPOR_AUTOMATION_CONFIG_PATH):
         return default_vapor_automation_config()
@@ -1982,15 +2000,19 @@ def load_vapor_automation_config():
         if not isinstance(data, dict):
             return default_vapor_automation_config()
         data.setdefault("rules", [])
+        data["rules"] = [normalize_vapor_automation_rule(rule) for rule in (data.get("rules") or []) if isinstance(rule, dict)]
         return data
     except Exception:
         return default_vapor_automation_config()
 
 
 def save_vapor_automation_config(config):
+    payload = default_vapor_automation_config()
+    payload.update(config or {})
+    payload["rules"] = [normalize_vapor_automation_rule(rule) for rule in (payload.get("rules") or []) if isinstance(rule, dict)]
     os.makedirs(os.path.dirname(VAPOR_AUTOMATION_CONFIG_PATH), exist_ok=True)
     with open(VAPOR_AUTOMATION_CONFIG_PATH, "w", encoding="utf-8") as f:
-        json.dump(config, f, ensure_ascii=False, indent=2)
+        json.dump(payload, f, ensure_ascii=False, indent=2)
 
 
 class VaporAutomationEngine:
@@ -1999,6 +2021,8 @@ class VaporAutomationEngine:
         self.thread = None
         self.rule_state = {}
         self.active_rule_ids = set()
+        self.triggering_rule_id = None
+        self.triggering_sequence_id = None
 
     def start(self):
         if not self.thread or not self.thread.is_alive():
@@ -2010,7 +2034,42 @@ class VaporAutomationEngine:
         return {
             "running": bool(self.thread and self.thread.is_alive()),
             "active_rule_ids": sorted(self.active_rule_ids),
+            "triggering_rule_id": self.triggering_rule_id,
+            "triggering_sequence_id": self.triggering_sequence_id,
+            "rule_runtime": self.runtime_status(),
         }
+
+    def runtime_status(self):
+        now = time.time()
+        runtime = {}
+        sequence_runtime = vapor_sequence_status(self.triggering_sequence_id)
+        for rule_id, state in self.rule_state.items():
+            rule_id = str(rule_id)
+            cooldown_sec = float(state.get("cooldown_sec") or 0.0)
+            last_trigger_ts = float(state.get("last_trigger_ts") or 0.0)
+            cooldown_remaining_sec = 0.0
+            if cooldown_sec > 0 and last_trigger_ts > 0:
+                cooldown_remaining_sec = round(max(0.0, cooldown_sec - (now - last_trigger_ts)), 1)
+            playback_progress_pct = 0.0
+            play_elapsed_sec = 0.0
+            play_duration_sec = 0.0
+            playing = bool(sequence_runtime.get("playing")) and str(self.triggering_rule_id or "") == rule_id
+            if playing:
+                play_elapsed_sec = float(sequence_runtime.get("play_elapsed_sec") or 0.0)
+                play_duration_sec = float(sequence_runtime.get("duration_sec") or 0.0)
+                if play_duration_sec > 0:
+                    playback_progress_pct = round(max(0.0, min(100.0, (play_elapsed_sec / play_duration_sec) * 100.0)), 1)
+            runtime[rule_id] = {
+                "in_range": bool(state.get("in_range", False)),
+                "muted": bool(state.get("muted", False)),
+                "playing": playing,
+                "play_elapsed_sec": round(play_elapsed_sec, 2),
+                "play_duration_sec": round(play_duration_sec, 2),
+                "playback_progress_pct": playback_progress_pct,
+                "cooldown_remaining_sec": cooldown_remaining_sec,
+                "last_trigger_ts": last_trigger_ts,
+            }
+        return runtime
 
     def run(self):
         while not self.stop_event.wait(1.0):
@@ -2037,11 +2096,15 @@ class VaporAutomationEngine:
                     "last_value": None,
                     "last_trigger_ts": 0.0,
                     "active": False,
+                    "cooldown_sec": float(rule.get("cooldown_sec") or 10.0),
+                    "in_range": False,
+                    "muted": False,
                 })
                 min_value = rule.get("min_value")
                 max_value = rule.get("max_value")
                 min_delta = float(rule.get("min_delta") or 0.0)
                 cooldown = float(rule.get("cooldown_sec") or 10.0)
+                muted = bool(rule.get("muted", False))
                 in_range = True
                 if min_value not in (None, ""):
                     in_range = in_range and value >= float(min_value)
@@ -2050,10 +2113,14 @@ class VaporAutomationEngine:
                 delta = None if state["last_value"] is None else abs(value - state["last_value"])
                 changed = state["last_value"] is None or delta >= min_delta
                 now = time.time()
+                state["cooldown_sec"] = cooldown
+                state["in_range"] = in_range
+                state["muted"] = muted
                 if in_range:
                     next_active.add(str(rule["id"]))
                 should_trigger = (
                     in_range
+                    and not muted
                     and changed
                     and (now - state["last_trigger_ts"] >= cooldown)
                 )
@@ -2062,6 +2129,8 @@ class VaporAutomationEngine:
                         sequence_id = str(rule.get("sequence_id") or "").strip() or None
                         runtime = vapor_sequence_status(sequence_id)
                         if not runtime.get("recording") and not runtime.get("playing"):
+                            self.triggering_rule_id = str(rule["id"])
+                            self.triggering_sequence_id = sequence_id or runtime.get("sequence_id")
                             start_vapor_sequence_playback(sequence_id)
                             state["last_trigger_ts"] = now
                             state["active"] = True
@@ -2073,6 +2142,10 @@ class VaporAutomationEngine:
                     state["active"] = False
                 state["last_value"] = value
             self.active_rule_ids = next_active
+            runtime = vapor_sequence_status(self.triggering_sequence_id)
+            if not runtime.get("playing"):
+                self.triggering_rule_id = None
+                self.triggering_sequence_id = None
 
 
 vapor_automation_engine = VaporAutomationEngine()
@@ -3625,21 +3698,7 @@ def api_vapor_automation_rules(payload: dict):
     rules = payload.get("rules")
     if not isinstance(rules, list):
         raise HTTPException(status_code=400, detail="rules debe ser una lista")
-    normalized = []
-    for raw in rules:
-        rid = raw.get("id") or uuid.uuid4().hex
-        normalized.append({
-            "id": rid,
-            "name": str(raw.get("name") or rid),
-            "device_id": raw.get("device_id") or "",
-            "metric_id": raw.get("metric_id") or "",
-            "sequence_id": str(raw.get("sequence_id") or "").strip() or None,
-            "min_value": raw.get("min_value"),
-            "max_value": raw.get("max_value"),
-            "min_delta": float(raw.get("min_delta") or 0.0),
-            "cooldown_sec": float(raw.get("cooldown_sec") or 10.0),
-            "enabled": bool(raw.get("enabled", True)),
-        })
+    normalized = [normalize_vapor_automation_rule(raw) for raw in rules if isinstance(raw, dict)]
     config = load_vapor_automation_config()
     config["rules"] = normalized
     save_vapor_automation_config(config)
@@ -3652,6 +3711,21 @@ def api_vapor_automation_delete_rule(rule_id: str):
     config["rules"] = [rule for rule in config.get("rules", []) if rule.get("id") != rule_id]
     save_vapor_automation_config(config)
     return {"ok": True, "config": config}
+
+
+@app.post("/api/vapor/automation/rules/{rule_id}/play")
+def api_vapor_automation_play_rule(rule_id: str):
+    config = load_vapor_automation_config()
+    rule = next((item for item in (config.get("rules") or []) if str(item.get("id")) == str(rule_id)), None)
+    if not rule:
+        raise HTTPException(status_code=404, detail="Regla no encontrada.")
+    sequence_id = str(rule.get("sequence_id") or "").strip() or None
+    runtime = vapor_sequence_status(sequence_id)
+    if runtime.get("recording") or runtime.get("playing"):
+        raise HTTPException(status_code=409, detail="Hay una secuencia en curso.")
+    vapor_automation_engine.triggering_rule_id = str(rule_id)
+    vapor_automation_engine.triggering_sequence_id = sequence_id or runtime.get("sequence_id")
+    return start_vapor_sequence_playback(sequence_id)
 
 
 @app.get("/api/sound/state")
@@ -5274,6 +5348,7 @@ def index():
       const metrics = vaporAutomationState.metrics || [];
       const rules = config.rules || [];
       const engine = vaporAutomationState.engine || {{}};
+      const runtimeMap = engine.rule_runtime || {{}};
       const sequence = vaporAutomationState.sequence || {{}};
       const sequences = Array.isArray(sequence.sequences) ? sequence.sequences : [];
       const activeRuleIds = new Set((engine.active_rule_ids || []).map(String));
@@ -5305,14 +5380,46 @@ def index():
       const list = document.getElementById('vaporRulesList');
       if (list) {{
         list.innerHTML = rules.length ? rules.map(rule => `
+          ${{(() => {{
+            const ruleId = String(rule.id);
+            const runtime = runtimeMap[ruleId] || {{}};
+            const isActive = activeRuleIds.has(ruleId);
+            const isMuted = !!rule.muted;
+            const isPlaying = !!runtime.playing;
+            const stateText = isPlaying
+              ? 'Reproduciendo'
+              : (isMuted ? 'Muted' : (isActive ? 'En rango' : (rule.enabled ? 'En espera' : 'Parada')));
+            const progressPct = isPlaying
+              ? Math.max(0, Math.min(100, Number(runtime.playback_progress_pct || 0)))
+              : ((Number(rule.cooldown_sec || 0) > 0 && Number(runtime.cooldown_remaining_sec || 0) > 0)
+                  ? Math.max(0, Math.min(100, 100 - ((Number(runtime.cooldown_remaining_sec || 0) / Number(rule.cooldown_sec || 0)) * 100)))
+                  : 0);
+            const progressColor = isPlaying ? '#22c55e' : (Number(runtime.cooldown_remaining_sec || 0) > 0 ? '#f59e0b' : 'transparent');
+            const runtimeText = isPlaying
+              ? `Secuencia ${{Number(runtime.play_elapsed_sec || 0).toFixed(1)}} / ${{Number(runtime.play_duration_sec || 0).toFixed(1)}} s`
+              : (Number(runtime.cooldown_remaining_sec || 0) > 0 ? `Cooldown ${{Number(runtime.cooldown_remaining_sec || 0).toFixed(1)}} s` : 'Sin actividad reciente');
+            const muteStyle = isMuted ? 'background:#ef4444; border-color:#ef4444; color:#fff;' : '';
+            const dotStyle = isMuted ? 'background:#ef4444;' : '';
+            const muteLabel = isMuted ? 'Unmute' : 'Mute';
+            return `
           <div style="margin-bottom:12px; padding-bottom:12px; border-bottom:1px solid rgba(22,50,74,0.08);">
-            <strong><span class="dot ${{activeRuleIds.has(String(rule.id)) ? 'online' : 'offline'}}"></span>${{rule.name}}</strong><br>
+            <strong><span class="dot ${{isActive ? 'online' : 'offline'}}" style="${{dotStyle}}"></span>${{rule.name}}</strong><br>
             Sensor: ${{rule.device_id}} / ${{rule.metric_id}}<br>
             Secuencia: ${{sequences.find(item => item.id === rule.sequence_id)?.name || 'Secuencia activa'}}<br>
             Rango: ${{rule.min_value ?? '--'}} a ${{rule.max_value ?? '--'}} | Cambio mínimo: ${{rule.min_delta}} | Cooldown: ${{rule.cooldown_sec}}s<br>
-            Estado: ${{activeRuleIds.has(String(rule.id)) ? 'En rango' : (rule.enabled ? 'En espera' : 'Parada')}}<br>
+            Estado: ${{stateText}}<br>
+            <div style="margin:6px 0 8px 0; display:inline-block; min-width:220px; max-width:260px;">
+              <div style="font-size:12px; opacity:0.86;">${{runtimeText}}</div>
+              <div style="margin-top:4px; height:6px; background:rgba(22,50,74,0.12); border-radius:999px; overflow:hidden;">
+                <div style="height:100%; width:${{progressPct}}%; background:${{progressColor}};"></div>
+              </div>
+            </div><br>
+            <button onclick="playVaporAutomationRule('${{rule.id}}')">Play</button>
+            <button onclick="toggleVaporAutomationRuleMute('${{rule.id}}')" style="${{muteStyle}}">${{muteLabel}}</button>
             <button onclick="removeVaporAutomationRule('${{rule.id}}')">Borrar</button>
           </div>
+        `;
+          }})()}}
         `).join('') : '<p>Sin reglas configuradas.</p>';
       }}
     }}
@@ -5337,6 +5444,7 @@ def index():
         max_value: document.getElementById('vaporRuleMaxValue')?.value || null,
         min_delta: document.getElementById('vaporRuleMinDelta')?.value || 0,
         cooldown_sec: document.getElementById('vaporRuleCooldown')?.value || 30,
+        muted: false,
         enabled: true,
       }});
       await fetch('/api/vapor/automation/rules', {{
@@ -5350,6 +5458,27 @@ def index():
     async function removeVaporAutomationRule(ruleId) {{
       await fetch(`/api/vapor/automation/rules/${{ruleId}}`, {{ method: 'DELETE' }});
       await loadVaporAutomationState();
+    }}
+
+    async function toggleVaporAutomationRuleMute(ruleId) {{
+      const rules = [ ...(vaporAutomationState?.config?.rules || []) ];
+      const nextRules = rules.map(rule => String(rule.id) === String(ruleId)
+        ? {{ ...rule, muted: !rule.muted }}
+        : rule);
+      await fetch('/api/vapor/automation/rules', {{
+        method: 'POST',
+        headers: {{ 'Content-Type': 'application/json' }},
+        body: JSON.stringify({{ rules: nextRules }}),
+      }});
+      await loadVaporAutomationState();
+    }}
+
+    async function playVaporAutomationRule(ruleId) {{
+      const res = await fetch(`/api/vapor/automation/rules/${{ruleId}}/play`, {{ method: 'POST' }});
+      if (res.ok) {{
+        await loadVaporAutomationState();
+        await loadVaporSequenceState();
+      }}
     }}
 
     async function loadFanState() {{
@@ -6892,7 +7021,7 @@ async function renderForecast(data) {{
     setInterval(loadVaporState, 5000);
     setInterval(loadFanState, 5000);
     setInterval(loadVaporSequenceState, 1000);
-    setInterval(loadVaporAutomationState, 5000);
+    setInterval(loadVaporAutomationState, 1000);
     setInterval(loadSoundState, 1000);
     setInterval(loadFxState, 10000);
     setInterval(loadExportState, 5000);
