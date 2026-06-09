@@ -154,6 +154,12 @@ Dashboard: http://<pi-ip>:8000/
   - `https://www.rotor-studio.net/v3/2026/nube-movil-es/`
 - The local 24h interpretation keeps a stable phrase for 180 seconds and can switch immediately when the state changes.
 - Sound tab now includes a volume slider for the active output.
+- Sound rules now support:
+  - `once`
+  - `loop`
+  - `interval`
+- `interval` is the right mode for short samples that should leave silence between plays while the sensor stays in range.
+- Rules also support per-rule `Mute`, per-rule volume, and `Apaga regla` to stop another active rule.
 
 ## Install
 `

@@ -406,6 +406,13 @@
   - rule activity indicators
   - output selection buttons for `USB` and `Jack`
   - volume slider for the active output
+  - per-rule `Mute`
+  - per-rule volume
+  - per-rule stop target
+- Current rule modes:
+  - `once`: triggers on entry/change and respects `cooldown`
+  - `loop`: continuous playback while the metric stays in range
+  - `interval`: one-shot playback every `cooldown` while the metric stays in range, with silence between plays
 - Current sound API endpoints:
   - `GET /api/sound/state`
   - `POST /api/sound/global`

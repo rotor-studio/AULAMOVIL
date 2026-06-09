@@ -269,6 +269,10 @@
 ## Validation Checklist
 - `systemctl is-active rotor-web rotor-collector rotor-camera`
 - `curl http://127.0.0.1:8000/api/sound/state`
+ - verify sound rule modes:
+   - `once` fires once per entry/change
+   - `loop` stays continuous while in range
+   - `interval` leaves silence between plays and repeats on `cooldown`
  - `curl http://127.0.0.1:8000/api/vapor/sequence`
  - `curl http://127.0.0.1:8000/api/vapor/automation`
  - `curl http://127.0.0.1:8000/api/smoke/state`
