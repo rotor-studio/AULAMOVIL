@@ -1,28 +1,17 @@
 {
   "rules": [
     {
-      "id": "1780422636794",
-      "name": "Direccion",
+      "id": "1781028542518",
+      "name": "NUBES",
       "device_id": "bme280_ground",
       "metric_id": "pressure_ground_hpa",
-      "sequence_id": null,
+      "sequence_id": "97cd8c4f24654c7d95efec7106957f7e",
       "min_value": "1000",
       "max_value": "1010",
       "min_delta": 1.0,
-      "cooldown_sec": 30.0,
-      "enabled": true
-    },
-    {
-      "id": "1780919692351",
-      "name": "test",
-      "device_id": "wind_esp8266",
-      "metric_id": "wind_speed_ms",
-      "sequence_id": "97cd8c4f24654c7d95efec7106957f7e",
-      "min_value": "10",
-      "max_value": "40",
-      "min_delta": 1.0,
-      "cooldown_sec": 30.0,
-      "enabled": true
+      "cooldown_sec": 3600.0,
+      "enabled": true,
+      "muted": false
     }
   ]
 }
