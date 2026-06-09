@@ -3901,15 +3901,20 @@ def api_sound_rules(payload: dict):
             continue
         previous = previous_rules.get(rule_id, {})
         muted = bool(rule.get("muted", False))
+        enabled = bool(rule.get("enabled", True))
         volume_pct = int(rule.get("volume_pct") or 100)
         gain = max(0.0, min(1.0, float(volume_pct) / 100.0))
-        if muted:
+        if muted or not enabled:
             sound_engine.stop_rule_sound(rule_id)
         else:
             sound_engine.set_rule_gain(rule_id, gain)
         if (
             muted != bool(previous.get("muted", False))
+            or enabled != bool(previous.get("enabled", True))
             or volume_pct != int(previous.get("volume_pct") or 100)
+            or str(rule.get("sound_file") or "") != str(previous.get("sound_file") or "")
+            or str(rule.get("mode") or "") != str(previous.get("mode") or "")
+            or list(rule.get("stop_rule_ids") or []) != list(previous.get("stop_rule_ids") or [])
         ):
             state = sound_engine.rule_state.setdefault(rule_id, {
                 "last_value": None,
@@ -6205,6 +6210,9 @@ async function renderForecast(data) {{
 
     let soundState = null;
     let vaporAutomationState = null;
+    let editingSoundRuleId = null;
+    let editingSoundRuleRestoreEnabled = true;
+    let soundRuleEditDirty = false;
 
     function metricOptionValue(item) {{
       return `${{item.device_id}}|||${{item.metric_id}}`;
@@ -6253,6 +6261,62 @@ async function renderForecast(data) {{
         parts.push('Preview');
       }}
       return parts.join(' | ');
+    }}
+
+    function markSoundRuleEditDirty() {{
+      soundRuleEditDirty = true;
+    }}
+
+    function buildInlineSoundRuleEditor(rule, payload) {{
+      const rules = payload?.config?.rules || [];
+      const sounds = payload?.sounds || [];
+      const stopRuleIds = collectStopRuleIds(rule);
+      const soundOptions = sounds.map(item => `<option value="${{item.name}}" ${{String(item.name) === String(rule.sound_file || '') ? 'selected' : ''}}>${{escapeHtml(item.label || item.name)}}</option>`).join('');
+      const stopOptions1 = ['<option value="">Ninguna</option>'].concat(
+        rules
+          .filter(item => String(item.id) !== String(rule.id))
+          .map(item => `<option value="${{item.id}}" ${{String(item.id) === String(stopRuleIds[0] || '') ? 'selected' : ''}}>${{escapeHtml(item.name || item.id)}}</option>`)
+      ).join('');
+      const stopOptions2 = ['<option value="">Ninguna</option>'].concat(
+        rules
+          .filter(item => String(item.id) !== String(rule.id))
+          .map(item => `<option value="${{item.id}}" ${{String(item.id) === String(stopRuleIds[1] || '') ? 'selected' : ''}}>${{escapeHtml(item.name || item.id)}}</option>`)
+      ).join('');
+      return `
+        <div style="margin-top:10px; padding:10px; background:rgba(22,50,74,0.04); border:1px solid rgba(22,50,74,0.10); border-radius:10px;">
+          <div style="margin-bottom:10px; opacity:0.85;">Editando: ${{escapeHtml(rule.name || rule.id)}}</div>
+          <div class="timelapse-controls">
+            <label>Sonido:
+              <select id="soundRuleEditFileSelect" onchange="markSoundRuleEditDirty()">
+                ${{soundOptions}}
+              </select>
+            </label>
+            <label>Bloquea regla:
+              <select id="soundRuleEditStopRuleSelect" onchange="markSoundRuleEditDirty()">
+                ${{stopOptions1}}
+              </select>
+            </label>
+            <label>Bloquea regla 2:
+              <select id="soundRuleEditStopRuleSelect2" onchange="markSoundRuleEditDirty()">
+                ${{stopOptions2}}
+              </select>
+            </label>
+            <button onclick="saveEditSoundRule()">Guardar cambios</button>
+            <button onclick="cancelEditSoundRule()">Cancelar</button>
+          </div>
+        </div>
+      `;
+    }}
+
+    function formatVaporRuleRuntime(rule, payload) {{
+      const runtime = (payload?.engine?.rule_runtime || {{}})[String(rule.id)] || {{}};
+      if (runtime.playing) {{
+        return `Secuencia ${{Number(runtime.play_elapsed_sec || 0).toFixed(1)}} / ${{Number(runtime.play_duration_sec || 0).toFixed(1)}} s`;
+      }}
+      if (Number(runtime.cooldown_remaining_sec || 0) > 0) {{
+        return `Cooldown ${{Number(runtime.cooldown_remaining_sec || 0).toFixed(1)}} s`;
+      }}
+      return 'Sin actividad reciente';
     }}
 
     function renderSoundState(payload) {{
@@ -6383,10 +6447,12 @@ async function renderForecast(data) {{
             </div>
             Bloquea: ${{formatStopRuleTargets(rule, rules)}}<br>
             <button onclick="playSoundRule('${{rule.id}}')">Play</button>
+            <button onclick="startEditSoundRule('${{rule.id}}')">${{String(editingSoundRuleId || '') === String(rule.id) ? 'Editando' : 'Editar'}}</button>
             <button onclick="toggleSoundRuleMute('${{rule.id}}')" style="${{muteStyle}}">${{muteLabel}}</button>
             <input type="range" min="0" max="100" step="1" value="${{Number(rule.volume_pct ?? 100)}}" oninput="previewSoundRuleVolume('${{rule.id}}', this.value)" onchange="setSoundRuleVolume('${{rule.id}}', this.value)" style="width:120px; vertical-align:middle; margin:0 8px;">
             <span id="soundRuleVolumeLabel_${{rule.id}}">${{Number(rule.volume_pct ?? 100)}}%</span>
             <button onclick="removeSoundRule('${{rule.id}}')">Borrar</button>
+            ${{String(editingSoundRuleId || '') === String(rule.id) ? buildInlineSoundRuleEditor(rule, payload) : ''}}
           </div>
         `;
           }})()}}
@@ -6508,7 +6574,75 @@ async function renderForecast(data) {{
 
     async function removeSoundRule(ruleId) {{
       await fetch(`/api/sound/rules/${{ruleId}}`, {{ method: 'DELETE' }});
+      if (String(editingSoundRuleId || '') === String(ruleId)) {{
+        editingSoundRuleId = null;
+        editingSoundRuleRestoreEnabled = true;
+        soundRuleEditDirty = false;
+      }}
       await loadSoundState();
+    }}
+
+    async function startEditSoundRule(ruleId) {{
+      if (!soundState) await loadSoundState();
+      let rules = [ ...(soundState?.config?.rules || []) ];
+      if (editingSoundRuleId && String(editingSoundRuleId) !== String(ruleId)) {{
+        rules = rules.map(rule => String(rule.id) === String(editingSoundRuleId)
+          ? {{ ...rule, enabled: editingSoundRuleRestoreEnabled }}
+          : rule);
+      }}
+      const target = rules.find(rule => String(rule.id) === String(ruleId));
+      if (!target) return;
+      editingSoundRuleId = String(ruleId);
+      editingSoundRuleRestoreEnabled = target.enabled !== false;
+      soundRuleEditDirty = false;
+      if (target.enabled !== false) {{
+        const nextRules = rules.map(rule => String(rule.id) === String(ruleId)
+          ? {{ ...rule, enabled: false }}
+          : rule);
+        await persistSoundRules(nextRules);
+      }}
+    }}
+
+    async function cancelEditSoundRule() {{
+      if (!editingSoundRuleId || !soundState) {{
+        editingSoundRuleId = null;
+        editingSoundRuleRestoreEnabled = true;
+        soundRuleEditDirty = false;
+        return;
+      }}
+      const rules = [ ...(soundState?.config?.rules || []) ];
+      const nextRules = rules.map(rule => String(rule.id) === String(editingSoundRuleId)
+        ? {{ ...rule, enabled: editingSoundRuleRestoreEnabled }}
+        : rule);
+      editingSoundRuleId = null;
+      soundRuleEditDirty = false;
+      await persistSoundRules(nextRules);
+      editingSoundRuleRestoreEnabled = true;
+    }}
+
+    async function saveEditSoundRule() {{
+      if (!editingSoundRuleId || !soundState) return;
+      const fileSelect = document.getElementById('soundRuleEditFileSelect');
+      const stopSelect1 = document.getElementById('soundRuleEditStopRuleSelect');
+      const stopSelect2 = document.getElementById('soundRuleEditStopRuleSelect2');
+      const stopRuleIds = [
+        stopSelect1?.value || '',
+        stopSelect2?.value || '',
+      ].map(value => String(value || '').trim()).filter(Boolean).filter((value, index, arr) => arr.indexOf(value) === index).slice(0, 2);
+      const rules = [ ...(soundState?.config?.rules || []) ];
+      const nextRules = rules.map(rule => String(rule.id) === String(editingSoundRuleId)
+        ? {{
+            ...rule,
+            sound_file: fileSelect?.value || rule.sound_file,
+            stop_rule_ids: stopRuleIds,
+            stop_rule_id: stopRuleIds[0] || null,
+            enabled: editingSoundRuleRestoreEnabled,
+          }}
+        : rule);
+      editingSoundRuleId = null;
+      soundRuleEditDirty = false;
+      await persistSoundRules(nextRules);
+      editingSoundRuleRestoreEnabled = true;
     }}
 
     async function persistSoundRules(rules) {{

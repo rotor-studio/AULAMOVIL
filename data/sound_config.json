@@ -284,6 +284,46 @@
         "rule_1781006777558"
       ],
       "stop_rule_id": "rule_1781006710783"
+    },
+    {
+      "id": "rule_1781029080000",
+      "name": "VIENTO I",
+      "device_id": "wind_esp8266",
+      "metric_id": "wind_speed_ms",
+      "sound_file": "insectoVolador15s.mp3",
+      "mode": "once",
+      "min_value": "5",
+      "max_value": "10",
+      "min_delta": 1.0,
+      "cooldown_sec": 10.0,
+      "enabled": false,
+      "muted": false,
+      "volume_pct": 85,
+      "stop_rule_ids": [
+        "rule_1781006777558",
+        "rule_1781006357059"
+      ],
+      "stop_rule_id": "rule_1781006777558"
+    },
+    {
+      "id": "rule_1781029226143",
+      "name": "VIENTO II",
+      "device_id": "wind_esp8266",
+      "metric_id": "wind_speed_ms",
+      "sound_file": "AbejaCort.mp3",
+      "mode": "once",
+      "min_value": "10",
+      "max_value": "20",
+      "min_delta": 1.0,
+      "cooldown_sec": 10.0,
+      "enabled": true,
+      "muted": false,
+      "volume_pct": 46,
+      "stop_rule_ids": [
+        "rule_1781006710783",
+        "rule_1781006357059"
+      ],
+      "stop_rule_id": "rule_1781006710783"
     }
   ]
 }
